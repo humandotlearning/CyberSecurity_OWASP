@@ -1,0 +1,2 @@
+[console_scripts]
+server = Cyber_analyst.server.app:main

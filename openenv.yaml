@@ -1,0 +1,16 @@
+spec_version: 1
+name: Cyber_analyst
+type: space
+runtime: fastapi
+app: server.app:app
+port: 8000
+tasks:
+  - id: secret_exposure_easy
+    description: Detect a leaked synthetic API key in a repo snapshot and submit rotation/removal remediation.
+    grader: server.graders:grade_secret_exposure_easy
+  - id: missing_security_headers_medium
+    description: Detect missing HSTS/CSP headers in a synthetic gateway header snapshot and submit remediation.
+    grader: server.graders:grade_missing_security_headers_medium
+  - id: authz_boundary_hard
+    description: Detect an admin route role-policy mismatch and submit least-privilege remediation.
+    grader: server.graders:grade_authz_boundary_hard
