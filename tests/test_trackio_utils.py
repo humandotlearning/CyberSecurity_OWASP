@@ -6,6 +6,7 @@ from training.trackio_utils import (
     DERIVED_TRACKIO_METRICS,
     aggregate_episode_metrics,
     episode_record_from_state,
+    episode_trace_fingerprint,
     episode_to_trace_row,
     episode_to_tracking_fields,
 )
@@ -91,3 +92,32 @@ def test_trace_rows_redact_hidden_values_from_action_arguments():
             assert not value or value not in row_text
     finally:
         env.close()
+
+
+def test_trace_fingerprint_ignores_episode_id_but_tracks_action_changes():
+    base_record = {
+        "episode_id": "episode-a",
+        "task_id": "task-1",
+        "scenario/seed": 123,
+        "scenario/split": "train",
+        "scenario/difficulty": 0,
+        "scenario/bug_type": "bola_idor",
+        "action_history": [
+            {
+                "tool_name": "read_file",
+                "arguments": {"path": "app/routes/invoices.py"},
+            }
+        ],
+        "observation_history": [{"last_action_valid": True}],
+        "reward_breakdown": {"total": 0.0},
+    }
+    same_trace = dict(base_record)
+    same_trace["episode_id"] = "episode-b"
+    changed_trace = dict(base_record)
+    changed_trace["action_history"] = [
+        *base_record["action_history"],
+        {"tool_name": "submit_fix", "arguments": {}},
+    ]
+
+    assert episode_trace_fingerprint(base_record) == episode_trace_fingerprint(same_trace)
+    assert episode_trace_fingerprint(base_record) != episode_trace_fingerprint(changed_trace)

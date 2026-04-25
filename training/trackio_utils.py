@@ -882,6 +882,24 @@ def trace_table_rows(episodes: Sequence[Any]) -> list[dict[str, Any]]:
     return [episode_to_trace_row(episode) for episode in episodes]
 
 
+def episode_trace_fingerprint(episode: Any) -> str:
+    """Return a stable fingerprint for a redacted trace row.
+
+    The episode id is intentionally excluded so repeated GRPO samples with the
+    same scenario/action trace do not appear as separate Trackio examples.
+    """
+
+    row = episode_to_trace_row(episode)
+    return _stable_hash(
+        {
+            key: row.get(key, "")
+            for key in TRACE_TABLE_COLUMNS
+            if key != "episode_id"
+        },
+        length=24,
+    )
+
+
 def log_trace_table(
     episodes: Sequence[Any],
     *,

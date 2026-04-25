@@ -90,19 +90,19 @@ reward:
     value: -0.30
     description: "Penalty for repeating the same failed action."
   repeated_low_value_action:
-    value: -0.10
+    value: -0.40
     description: "Penalty for repeating the exact same non-progress action."
   no_progress_action:
-    value: -0.05
+    value: -0.15
     description: "Penalty for valid tool calls that add no new useful progress."
   noop_action:
     value: -0.02
     description: "Small penalty for spending a step without acting."
   repeated_file_read:
-    value: -0.05
+    value: -0.20
     description: "Penalty for rereading the same file without a patch change."
   repeated_local_request:
-    value: -0.05
+    value: -0.20
     description: "Penalty for repeating the same local request after evidence is known."
   repeated_visible_tests:
     value: -0.10

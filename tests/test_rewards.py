@@ -114,8 +114,9 @@ def test_repeated_futile_actions_are_penalized(monkeypatch):
 
     assert first.reward_breakdown["progressive"] > 0.0
     assert second.reward_breakdown["progressive"] == 0.0
-    assert second.reward_breakdown["behavior_penalty"] <= -0.10
+    assert second.reward_breakdown["behavior_penalty"] <= -0.50
     assert second.reward_breakdown["total"] < 0.0
+    assert env.state.accumulated_reward < 0.0
 
 
 def test_dense_episode_reward_cap_blocks_repeated_positive_farming(monkeypatch):

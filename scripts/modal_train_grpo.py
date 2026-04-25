@@ -518,6 +518,7 @@ def train_cybersecurity_owasp_grpo(
     from training.trackio_utils import (
         aggregate_episode_metrics,
         episode_record_from_state,
+        episode_trace_fingerprint,
         log_gpu_metrics,
         log_trace_table,
         log_trackio_metrics,
@@ -886,6 +887,7 @@ def train_cybersecurity_owasp_grpo(
                 pass
 
     trace_step = {"value": 0}
+    logged_trace_fingerprints: set[str] = set()
 
     def _completion_to_text(completion) -> str:
         if completion is None:
@@ -950,16 +952,28 @@ def train_cybersecurity_owasp_grpo(
         except Exception as exc:
             print(f"Trackio metric logging skipped: {exc!r}")
 
+        sampled_traces = []
+        seen_this_batch: set[str] = set()
+        for index, (env, record, reward) in enumerate(zip(environments, episode_records, rewards)):
+            fingerprint = episode_trace_fingerprint(record)
+            if fingerprint in seen_this_batch or fingerprint in logged_trace_fingerprints:
+                continue
+            seen_this_batch.add(fingerprint)
+            logged_trace_fingerprints.add(fingerprint)
+            sampled_traces.append((index, env, record, reward, fingerprint))
+            if len(sampled_traces) >= 4:
+                break
+
         try:
             log_trace_table(
-                episode_records[: min(4, len(episode_records))],
+                [record for _, _, record, _, _ in sampled_traces],
                 table_name="sample_traces",
                 step=trace_step["value"],
             )
         except Exception as exc:
             print(f"Trackio sample trace table logging skipped: {exc!r}")
 
-        for index, env in enumerate(environments):
+        for index, env, _record, reward, fingerprint in sampled_traces:
             messages = list(getattr(env, "trace_messages", []))
             if index < len(completions):
                 completion_text = _completion_to_text(completions[index])
@@ -974,8 +988,9 @@ def train_cybersecurity_owasp_grpo(
             metadata.update(
                 {
                     "sample_index": index,
-                    "reward": rewards[index],
+                    "reward": reward,
                     "trace_step": trace_step["value"],
+                    "trace_fingerprint": fingerprint,
                     "run_name": run_name,
                 }
             )
