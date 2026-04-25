@@ -1,0 +1,4 @@
+interface:
+  display_name: "CyberSecurity OWASP Trainer"
+  short_description: "Train and evaluate CyberSecurity_OWASP"
+  default_prompt: "Use $cybersecurity-owasp-trainer to run a safe GRPO training/evaluation pass for CyberSecurity_OWASP."

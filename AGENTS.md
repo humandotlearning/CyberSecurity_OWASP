@@ -793,7 +793,7 @@ import os
 from trl import GRPOConfig
 
 output_dir = os.getenv("OUTPUT_DIR", "CyberSecurity_OWASP-qwen3-1.7b-grpo")
-trackio_space_id = os.getenv("TRACKIO_SPACE_ID", output_dir)
+trackio_space_id = os.getenv("TRACKIO_SPACE_ID", "Humanlearning/CyberSecurity_OWASP-trackio")
 
 grpo_config = GRPOConfig(
     output_dir=output_dir,
@@ -824,6 +824,17 @@ Start with small debug runs before scaling.
 ## Trackio logging requirements
 
 Trackio is mandatory for training and evaluation visibility.
+
+Canonical Trackio Space:
+
+```text
+https://huggingface.co/spaces/Humanlearning/CyberSecurity_OWASP-trackio
+```
+
+Use `TRACKIO_SPACE_ID=Humanlearning/CyberSecurity_OWASP-trackio` for training,
+evaluation, and smoke runs. This is separate from the OpenEnv HF Space
+`Humanlearning/CyberSecurity_OWASP`; do not send Trackio runs to the
+environment Space.
 
 Run naming convention:
 
