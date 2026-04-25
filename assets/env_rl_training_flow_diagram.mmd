@@ -1,0 +1,26 @@
+flowchart TD
+    Start["Start run\nselect base model + config"] --> Cache["Prepare scenario splits\ntrain, validation, hidden_eval"]
+    Cache --> Baseline["Baseline evaluation\nscripted/model rollouts"]
+    Baseline --> TrainLoop["GRPO training loop"]
+
+    subgraph Episode["One OpenEnv Episode"]
+        Reset["env.reset(seed)\nnew generated app + policy"] --> Observe["Observation\nphase, hints, available tools"]
+        Observe --> Prompt["Build action prompt\nJSON action only"]
+        Prompt --> Generate["LLM generates action"]
+        Generate --> Step["env.step(action)\nphase gate + execute tool"]
+        Step --> Intermediate{"done?"}
+        Intermediate -- "no" --> Observe
+        Intermediate -- "yes" --> Final["Terminal verifier\nhidden security + regression + anti-cheat"]
+    end
+
+    TrainLoop --> Reset
+    Final --> Rewards["Reward components\ndiscovery, security, regression, public_routes,\npatch_quality, visible_tests, safety, anti_cheat"]
+    Rewards --> Update["GRPO update\nLoRA adapter checkpoint"]
+    Update --> Metrics["Trackio logging\nreward means, pass rates, invalid actions, latency"]
+    Metrics --> Validate{"Validation plateau\nor failure cluster?"}
+    Validate -- "continue" --> TrainLoop
+    Validate -- "adjust curriculum" --> Curriculum["Curriculum controller\nrebalance difficulty and traps"]
+    Curriculum --> TrainLoop
+    Validate -- "final checkpoint" --> Heldout["Held-out eval\nunseen seeds/layouts/domain combos"]
+    Heldout --> Compare["Before/after summary\nsuccess, reward, exploit-block, regression preservation"]
+    Compare --> Artifacts["Saved artifacts\noutputs/evals + outputs/rollouts"]

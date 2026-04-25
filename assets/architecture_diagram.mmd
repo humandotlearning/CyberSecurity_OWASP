@@ -1,0 +1,51 @@
+flowchart LR
+    subgraph Factory["Scenario Factory"]
+        Policy["Policy graph\nusers, roles, tenants, ownership"]
+        Templates["FastAPI template renderer\nroutes, services, auth helpers"]
+        Mutator["A01 bug mutator\none injected authorization defect"]
+        Fixtures["Fixture generator\nvisible tests + hidden facts"]
+        Compiler["Scenario compiler\nseeded workspace"]
+        Policy --> Compiler
+        Templates --> Compiler
+        Mutator --> Compiler
+        Fixtures --> Compiler
+    end
+
+    subgraph Runtime["CyberSecurity_OWASP OpenEnv Runtime"]
+        Reset["reset(seed)\ncompile fresh scenario"]
+        Env["Environment state\nphase, history, metrics, hidden facts"]
+        Tools["Typed step(action) tools\ninspect, read, request, patch, test, submit"]
+        Sandbox["Generated local app workspace\neditable app files only"]
+        Verifier["Deterministic verifier\nsecurity + regression + public routes"]
+        Reward["Reward engine\nstable component breakdown"]
+        App["FastAPI OpenEnv server\n/ws, /reset, /step, /state"]
+        Reset --> Env
+        Env --> Tools
+        Tools <--> Sandbox
+        Tools --> Verifier
+        Verifier --> Reward
+        Reward --> Env
+        Env --> App
+    end
+
+    subgraph Agent["Single LLM Agent"]
+        Obs["Observation parser"]
+        Reason["Policy and code reasoning"]
+        Act["One JSON action"]
+        Obs --> Reason --> Act
+    end
+
+    subgraph Ops["Training, Evaluation, Demo"]
+        Rollout["Rollout loop\nreset -> step* -> terminal reward"]
+        GRPO["TRL GRPO / LoRA training"]
+        Trackio["Trackio metrics\nreward and pass rates"]
+        Eval["Held-out evaluation\nunseen seeds/layouts/domains"]
+        Artifacts["Rollout artifacts\nbefore/after traces"]
+        Rollout --> GRPO --> Trackio --> Eval --> Artifacts
+    end
+
+    Compiler --> Reset
+    App --> Obs
+    Act --> App
+    Reward --> Rollout
+    GRPO --> Agent

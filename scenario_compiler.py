@@ -6,9 +6,14 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .fixture_generator import visible_workspace_summary
-from .policy_graph import build_invoice_policy
-from .template_renderer import render_fastapi_basic
+try:
+    from .fixture_generator import visible_workspace_summary
+    from .policy_graph import build_invoice_policy
+    from .template_renderer import render_fastapi_basic
+except ImportError:  # pragma: no cover
+    from fixture_generator import visible_workspace_summary
+    from policy_graph import build_invoice_policy
+    from template_renderer import render_fastapi_basic
 
 
 def compile_scenario(seed: int, split: str = "train", difficulty: int = 0) -> dict[str, Any]:

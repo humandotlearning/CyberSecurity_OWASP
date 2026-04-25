@@ -5,7 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .models import CyberSecurityOWASPAction, CyberSecurityOWASPState
+try:
+    from .models import CyberSecurityOWASPAction, CyberSecurityOWASPState
+except ImportError:  # pragma: no cover
+    from models import CyberSecurityOWASPAction, CyberSecurityOWASPState
 
 
 BLOCKED_PATH_MARKERS = (

@@ -14,6 +14,12 @@ The environment is intentionally not a two-agent red-team/blue-team setup. The a
 
 ## 2. Final architecture diagram
 
+Rendered asset:
+
+![CyberSecurity_OWASP architecture](assets/architecture_diagram.svg)
+
+Editable source: `assets/architecture_diagram.mmd`
+
 ```mermaid
 flowchart TB
     %% =========================
@@ -363,6 +369,12 @@ Run before/after evaluation on the same held-out suite.
 
 ## 8. Training flow
 
+Rendered asset:
+
+![CyberSecurity_OWASP RL training flow](assets/env_rl_training_flow_diagram.svg)
+
+Editable source: `assets/env_rl_training_flow_diagram.mmd`
+
 ```text
 1. Build CyberSecurity_OWASP OpenEnv server.
 2. Generate 600 MVP scenarios.
@@ -476,4 +488,3 @@ Expected endpoints:
 | OpenEnv deployment docs | Informs HF Spaces deployment, endpoints, Docker workflow, and installable client package. | 8.5/10 |
 | Hackathon judging criteria | Informs demo priorities: innovation, storytelling, reward improvement, and training pipeline. | 9/10 |
 | TRL/OpenEnv training example | Informs rollout function, decomposed reward functions, and Trackio logging pattern. | 8/10 |
-

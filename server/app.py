@@ -16,7 +16,7 @@ except Exception as e:  # pragma: no cover
 try:
     from ..models import CyberSecurityOWASPAction, CyberSecurityOWASPObservation
     from .CyberSecurity_OWASP_environment import CybersecurityOwaspEnvironment
-except ModuleNotFoundError:
+except ImportError:
     from models import CyberSecurityOWASPAction, CyberSecurityOWASPObservation
     from server.CyberSecurity_OWASP_environment import CybersecurityOwaspEnvironment
 

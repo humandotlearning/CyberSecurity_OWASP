@@ -23,6 +23,14 @@ inspect generated app + policy -> discover authorization bug -> submit finding -
 
 The current implementation includes a functional MVP scenario: an invoices FastAPI-style app with one injected OWASP A01 BOLA/IDOR defect, visible tests, hidden deterministic verifier checks, anti-cheat safeguards, and decomposed reward.
 
+## Diagrams
+
+![CyberSecurity_OWASP architecture](assets/architecture_diagram.svg)
+
+![CyberSecurity_OWASP RL training flow](assets/env_rl_training_flow_diagram.svg)
+
+Editable Mermaid sources are available in `assets/architecture_diagram.mmd` and `assets/env_rl_training_flow_diagram.mmd`.
+
 ## Quick Start
 
 ```bash
@@ -154,6 +162,39 @@ The shell wrapper is equivalent:
 ```bash
 MODE=smoke EPISODES=4 uv run --extra modal bash scripts/modal_run_ephemeral.sh
 ```
+
+## Modal GRPO Training
+
+The persistent GPU training launcher packages this local repo into Modal, trains
+a small LoRA GRPO run, logs metrics and traces to Trackio, stores checkpoints in
+the `CyberSecurity_OWASP-grpo-runs` Modal volume, and pushes the output adapter
+to Hugging Face Hub.
+
+Create a Modal secret named `CyberSecurity_OWASP-secrets` with `HF_TOKEN`, then
+run the import/config check:
+
+```bash
+uv run --extra modal modal run scripts/modal_train_grpo.py --mode config
+```
+
+Run the default smoke GRPO job:
+
+```bash
+uv run --extra modal modal run scripts/modal_train_grpo.py \
+  --max-steps 10 \
+  --dataset-size 16 \
+  --num-generations 2 \
+  --difficulty 0
+```
+
+Defaults are derived from `HF_TOKEN`:
+
+- Trackio Space: `<hf-user>/CyberSecurity_OWASP-trackio`
+- Trackio project: `CyberSecurity_OWASP-grpo`
+- Output repo: `<hf-user>/CyberSecurity_OWASP-qwen3-1.7b-grpo-lora`
+
+Override these with `--trackio-space-id`, `--trackio-project`, and
+`--output-repo-id` when needed.
 
 ## Docker / Spaces
 

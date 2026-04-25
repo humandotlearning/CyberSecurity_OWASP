@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from .models import CyberSecurityOWASPAction, CyberSecurityOWASPState
+try:
+    from .models import CyberSecurityOWASPAction, CyberSecurityOWASPState
+except ImportError:  # pragma: no cover
+    from models import CyberSecurityOWASPAction, CyberSecurityOWASPState
 
 
 REWARD_KEYS = (

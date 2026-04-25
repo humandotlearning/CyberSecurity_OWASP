@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+openenv_CyberSecurity_OWASP.egg-info
+outputs
+.env
+.env.*

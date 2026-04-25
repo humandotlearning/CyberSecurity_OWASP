@@ -1,0 +1,12 @@
+.git/
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+openenv_CyberSecurity_OWASP.egg-info/
+outputs/logs/*
+outputs/evals/*
+outputs/rollouts/*
+.env
+.env.*

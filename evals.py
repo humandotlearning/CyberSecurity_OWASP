@@ -5,7 +5,10 @@ from __future__ import annotations
 import difflib
 from typing import Iterable
 
-from .models import CyberSecurityOWASPAction
+try:
+    from .models import CyberSecurityOWASPAction
+except ImportError:  # pragma: no cover
+    from models import CyberSecurityOWASPAction
 
 
 def random_policy() -> Iterable[CyberSecurityOWASPAction]:

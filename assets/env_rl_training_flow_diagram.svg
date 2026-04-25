@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="860" viewBox="0 0 1280 860" role="img" aria-labelledby="title desc">
+  <title id="title">CyberSecurity_OWASP RL training flow diagram</title>
+  <desc id="desc">End-to-end RL training flow for baseline evaluation, OpenEnv rollouts, reward computation, GRPO updates, Trackio logging, curriculum, and held-out evaluation.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg{fill:#f8fafc}.group{fill:#ffffff;stroke:#cbd5e1;stroke-width:2}.node{fill:#f0f9ff;stroke:#0284c7;stroke-width:2}.episode{fill:#ecfdf5;stroke:#059669;stroke-width:2}.reward{fill:#fff7ed;stroke:#ea580c;stroke-width:2}.eval{fill:#f5f3ff;stroke:#7c3aed;stroke-width:2}.title{font:700 22px Arial, sans-serif;fill:#111827}.groupTitle{font:700 18px Arial, sans-serif;fill:#0f172a}.label{font:700 15px Arial, sans-serif;fill:#111827}.small{font:13px Arial, sans-serif;fill:#374151}.edge{stroke:#334155;stroke-width:2;fill:none;marker-end:url(#arrow)}.dash{stroke:#64748b;stroke-width:2;fill:none;stroke-dasharray:6 5;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect class="bg" width="1280" height="860"/>
+  <text class="title" x="40" y="44">CyberSecurity_OWASP Environment RL Training Flow</text>
+
+  <rect class="node" x="70" y="90" width="220" height="72" rx="8"/>
+  <text class="label" x="92" y="119">Start Run</text>
+  <text class="small" x="92" y="142">base model + GRPO config</text>
+  <rect class="node" x="350" y="90" width="220" height="72" rx="8"/>
+  <text class="label" x="372" y="119">Scenario Splits</text>
+  <text class="small" x="372" y="142">train, validation, hidden_eval</text>
+  <rect class="node" x="630" y="90" width="220" height="72" rx="8"/>
+  <text class="label" x="652" y="119">Baseline Eval</text>
+  <text class="small" x="652" y="142">reward + success before RL</text>
+  <rect class="node" x="910" y="90" width="220" height="72" rx="8"/>
+  <text class="label" x="932" y="119">GRPO Loop</text>
+  <text class="small" x="932" y="142">collect rollouts, update LoRA</text>
+
+  <rect class="group" x="80" y="220" width="680" height="500" rx="10"/>
+  <text class="groupTitle" x="110" y="255">One OpenEnv Episode</text>
+  <rect class="episode" x="120" y="290" width="210" height="70" rx="8"/>
+  <text class="label" x="142" y="319">env.reset(seed)</text>
+  <text class="small" x="142" y="342">generated app + policy</text>
+  <rect class="episode" x="420" y="290" width="250" height="70" rx="8"/>
+  <text class="label" x="442" y="319">Observation</text>
+  <text class="small" x="442" y="342">phase, hints, available tools</text>
+  <rect class="episode" x="420" y="400" width="250" height="70" rx="8"/>
+  <text class="label" x="442" y="429">Build Prompt</text>
+  <text class="small" x="442" y="452">require one JSON action</text>
+  <rect class="episode" x="120" y="400" width="210" height="70" rx="8"/>
+  <text class="label" x="142" y="429">LLM Action</text>
+  <text class="small" x="142" y="452">typed tool + arguments</text>
+  <rect class="episode" x="120" y="515" width="210" height="70" rx="8"/>
+  <text class="label" x="142" y="544">env.step(action)</text>
+  <text class="small" x="142" y="567">gate, execute, record state</text>
+  <rect class="episode" x="420" y="515" width="250" height="70" rx="8"/>
+  <text class="label" x="442" y="544">Done?</text>
+  <text class="small" x="442" y="567">continue or submit hidden eval</text>
+  <rect class="reward" x="420" y="625" width="250" height="70" rx="8"/>
+  <text class="label" x="442" y="654">Terminal Verifier</text>
+  <text class="small" x="442" y="677">security, regression, anti-cheat</text>
+
+  <rect class="reward" x="830" y="240" width="350" height="92" rx="8"/>
+  <text class="label" x="860" y="272">Reward Components</text>
+  <text class="small" x="860" y="296">discovery, security, regression, public routes</text>
+  <text class="small" x="860" y="316">patch quality, visible tests, safety, anti-cheat</text>
+  <rect class="reward" x="830" y="375" width="350" height="72" rx="8"/>
+  <text class="label" x="860" y="404">GRPO Update</text>
+  <text class="small" x="860" y="427">optimize LoRA adapter from rollouts</text>
+  <rect class="reward" x="830" y="490" width="350" height="72" rx="8"/>
+  <text class="label" x="860" y="519">Trackio Logging</text>
+  <text class="small" x="860" y="542">reward means, pass rates, invalid actions</text>
+  <rect class="eval" x="830" y="605" width="350" height="72" rx="8"/>
+  <text class="label" x="860" y="634">Validation Decision</text>
+  <text class="small" x="860" y="657">continue, rebalance curriculum, or finalize</text>
+
+  <rect class="eval" x="140" y="770" width="250" height="58" rx="8"/>
+  <text class="label" x="162" y="805">Curriculum Rebalance</text>
+  <rect class="eval" x="515" y="770" width="250" height="58" rx="8"/>
+  <text class="label" x="537" y="805">Held-out Eval</text>
+  <rect class="eval" x="890" y="770" width="250" height="58" rx="8"/>
+  <text class="label" x="912" y="805">Saved Artifacts</text>
+
+  <path class="edge" d="M290 126 L350 126"/>
+  <path class="edge" d="M570 126 L630 126"/>
+  <path class="edge" d="M850 126 L910 126"/>
+  <path class="edge" d="M1020 162 L545 290"/>
+  <path class="edge" d="M330 325 L420 325"/>
+  <path class="edge" d="M545 360 L545 400"/>
+  <path class="edge" d="M420 435 L330 435"/>
+  <path class="edge" d="M225 470 L225 515"/>
+  <path class="edge" d="M330 550 L420 550"/>
+  <path class="dash" d="M670 550 C735 505 735 375 670 325"/>
+  <path class="edge" d="M545 585 L545 625"/>
+  <path class="edge" d="M670 660 L830 286"/>
+  <path class="edge" d="M1005 332 L1005 375"/>
+  <path class="edge" d="M1005 447 L1005 490"/>
+  <path class="edge" d="M1005 562 L1005 605"/>
+  <path class="dash" d="M830 641 C640 704 370 706 265 770"/>
+  <path class="dash" d="M265 770 C258 645 265 585 420 550"/>
+  <path class="edge" d="M1005 677 L640 770"/>
+  <path class="edge" d="M765 799 L890 799"/>
+</svg>
