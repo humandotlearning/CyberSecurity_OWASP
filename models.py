@@ -56,8 +56,12 @@ class CyberSecurityOWASPState(State):
     seed: int = 0
     split: CyberSecurityOWASPSplit = "train"
     difficulty: int = 0
+    difficulty_tier: str = "warmup"
     domain: str = ""
     bug_family: str = ""
+    scenario_family: str = ""
+    template_id: str = "fastapi_basic"
+    target_weakness: str = "same_role_cross_object"
     phase: CyberSecurityOWASPPhase = "discover"
     max_steps: int = 40
     done: bool = False
@@ -71,6 +75,11 @@ class CyberSecurityOWASPState(State):
     reward_history: list[dict[str, float]] = Field(default_factory=list)
     visible_facts: dict[str, Any] = Field(default_factory=dict)
     hidden_facts: dict[str, Any] = Field(default_factory=dict)
+    curriculum_snapshot: dict[str, Any] = Field(default_factory=dict)
+    verification_summary: dict[str, Any] = Field(default_factory=dict)
+    patch_diff: str = ""
+    episode_artifact_path: str | None = None
+    observation_history: list[dict[str, Any]] = Field(default_factory=list)
     metrics: dict[str, Any] = Field(default_factory=dict)
     anti_cheat_flags: list[str] = Field(default_factory=list)
 

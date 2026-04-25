@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from server.app import app
+from CyberSecurity_OWASP.server.app import app
 
 
 def test_space_root_redirects_to_openenv_web_ui():

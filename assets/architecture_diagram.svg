@@ -1,90 +1,85 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
-  <title id="title">CyberSecurity_OWASP architecture diagram</title>
-  <desc id="desc">System architecture showing scenario factory, OpenEnv runtime, single LLM agent, and training/evaluation components.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="820" viewBox="0 0 1320 820" role="img" aria-labelledby="title desc">
+  <title id="title">CyberSecurity_OWASP closed-loop architecture</title>
+  <desc id="desc">Closed-loop architecture with curriculum, bounded adversarial scenario design, OpenEnv runtime, verifier, reward engine, logger, agent, and training loop.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L9,3 z" fill="#374151"/>
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
     </marker>
     <style>
-      .bg{fill:#f8fafc}.group{fill:#ffffff;stroke:#cbd5e1;stroke-width:2}.node{fill:#eef6ff;stroke:#2563eb;stroke-width:2}.node2{fill:#ecfdf5;stroke:#059669;stroke-width:2}.node3{fill:#fff7ed;stroke:#ea580c;stroke-width:2}.node4{fill:#f5f3ff;stroke:#7c3aed;stroke-width:2}.title{font:700 22px Arial, sans-serif;fill:#111827}.label{font:700 15px Arial, sans-serif;fill:#111827}.small{font:13px Arial, sans-serif;fill:#374151}.groupTitle{font:700 18px Arial, sans-serif;fill:#0f172a}.edge{stroke:#374151;stroke-width:2;fill:none;marker-end:url(#arrow)}
+      .bg{fill:#f8fafc}.group{fill:#fff;stroke:#cbd5e1;stroke-width:2}.factory{fill:#eef6ff;stroke:#2563eb;stroke-width:2}.runtime{fill:#ecfdf5;stroke:#059669;stroke-width:2}.agent{fill:#fff7ed;stroke:#ea580c;stroke-width:2}.ops{fill:#f5f3ff;stroke:#7c3aed;stroke-width:2}.title{font:700 24px Arial,sans-serif;fill:#0f172a}.groupTitle{font:700 18px Arial,sans-serif;fill:#0f172a}.label{font:700 14px Arial,sans-serif;fill:#111827}.small{font:12px Arial,sans-serif;fill:#334155}.edge{stroke:#334155;stroke-width:2;fill:none;marker-end:url(#arrow)}
     </style>
   </defs>
-  <rect class="bg" width="1280" height="760"/>
-  <text class="title" x="40" y="44">CyberSecurity_OWASP Architecture</text>
+  <rect class="bg" width="1320" height="820"/>
+  <text class="title" x="40" y="45">CyberSecurity_OWASP Closed-Loop Architecture</text>
 
-  <rect class="group" x="30" y="80" width="270" height="610" rx="10"/>
-  <text class="groupTitle" x="55" y="115">Scenario Factory</text>
-  <rect class="node" x="55" y="145" width="220" height="72" rx="8"/>
-  <text class="label" x="75" y="174">Policy Graph</text>
-  <text class="small" x="75" y="197">users, roles, tenants, ownership</text>
-  <rect class="node" x="55" y="242" width="220" height="72" rx="8"/>
-  <text class="label" x="75" y="271">Template Renderer</text>
-  <text class="small" x="75" y="294">FastAPI routes, services, guards</text>
-  <rect class="node" x="55" y="339" width="220" height="72" rx="8"/>
-  <text class="label" x="75" y="368">A01 Bug Mutator</text>
-  <text class="small" x="75" y="391">one injected authorization defect</text>
-  <rect class="node" x="55" y="436" width="220" height="72" rx="8"/>
-  <text class="label" x="75" y="465">Fixture Generator</text>
-  <text class="small" x="75" y="488">visible tests + hidden facts</text>
-  <rect class="node" x="55" y="555" width="220" height="80" rx="8"/>
-  <text class="label" x="75" y="587">Scenario Compiler</text>
-  <text class="small" x="75" y="611">seeded generated workspace</text>
+  <rect class="group" x="30" y="80" width="290" height="610" rx="8"/>
+  <text class="groupTitle" x="55" y="115">Scenario + Curriculum Factory</text>
+  <rect class="factory" x="55" y="140" width="240" height="64" rx="6"/>
+  <text class="label" x="75" y="166">Policy Graph Generator</text>
+  <text class="small" x="75" y="188">users, roles, tenants, ownership</text>
+  <rect class="factory" x="55" y="225" width="240" height="64" rx="6"/>
+  <text class="label" x="75" y="251">Curriculum Controller</text>
+  <text class="small" x="75" y="273">mastery, weak spots, difficulty</text>
+  <rect class="factory" x="55" y="310" width="240" height="64" rx="6"/>
+  <text class="label" x="75" y="336">Bounded Adversarial Designer</text>
+  <text class="small" x="75" y="358">safe local scenario targets</text>
+  <rect class="factory" x="55" y="395" width="240" height="64" rx="6"/>
+  <text class="label" x="75" y="421">Template + A01 Mutator</text>
+  <text class="small" x="75" y="443">FastAPI code with one defect</text>
+  <rect class="factory" x="55" y="480" width="240" height="76" rx="6"/>
+  <text class="label" x="75" y="506">ScenarioSpec + Oracle</text>
+  <text class="small" x="75" y="528">visible hints, hidden tuples</text>
 
-  <rect class="group" x="350" y="80" width="440" height="610" rx="10"/>
-  <text class="groupTitle" x="375" y="115">OpenEnv Runtime</text>
-  <rect class="node2" x="380" y="145" width="170" height="70" rx="8"/>
-  <text class="label" x="400" y="174">reset(seed)</text>
-  <text class="small" x="400" y="196">fresh scenario</text>
-  <rect class="node2" x="590" y="145" width="170" height="70" rx="8"/>
-  <text class="label" x="610" y="174">State Store</text>
-  <text class="small" x="610" y="196">phase, history, metrics</text>
-  <rect class="node2" x="380" y="260" width="380" height="78" rx="8"/>
-  <text class="label" x="405" y="290">Typed step(action) Tools</text>
-  <text class="small" x="405" y="313">inspect, read, request, compare, patch, test, submit</text>
-  <rect class="node2" x="380" y="382" width="170" height="82" rx="8"/>
-  <text class="label" x="400" y="413">Local App</text>
-  <text class="small" x="400" y="436">editable generated files</text>
-  <rect class="node2" x="590" y="382" width="170" height="82" rx="8"/>
-  <text class="label" x="610" y="413">Verifier</text>
-  <text class="small" x="610" y="436">hidden invariant tests</text>
-  <rect class="node2" x="380" y="515" width="170" height="82" rx="8"/>
-  <text class="label" x="400" y="546">Reward Engine</text>
-  <text class="small" x="400" y="569">stable components</text>
-  <rect class="node2" x="590" y="515" width="170" height="82" rx="8"/>
-  <text class="label" x="610" y="546">FastAPI Server</text>
-  <text class="small" x="610" y="569">/ws, /reset, /step, /state</text>
+  <rect class="group" x="360" y="80" width="360" height="690" rx="8"/>
+  <text class="groupTitle" x="385" y="115">OpenEnv Runtime</text>
+  <rect class="runtime" x="390" y="140" width="285" height="58" rx="6"/>
+  <text class="label" x="410" y="164">reset(seed, difficulty)</text>
+  <text class="small" x="410" y="184">select curriculum profile</text>
+  <rect class="runtime" x="390" y="220" width="285" height="58" rx="6"/>
+  <text class="label" x="410" y="244">Episode State Store</text>
+  <text class="small" x="410" y="264">phase, history, weakness, patch diff</text>
+  <rect class="runtime" x="390" y="300" width="285" height="58" rx="6"/>
+  <text class="label" x="410" y="324">Typed Action Tools</text>
+  <text class="small" x="410" y="344">inspect, request, patch, test</text>
+  <rect class="runtime" x="390" y="380" width="285" height="58" rx="6"/>
+  <text class="label" x="410" y="404">Ephemeral App Sandbox</text>
+  <text class="small" x="410" y="424">workspace, fixtures, local API model</text>
+  <rect class="runtime" x="390" y="460" width="285" height="58" rx="6"/>
+  <text class="label" x="410" y="484">Multi-layer Verifier</text>
+  <text class="small" x="410" y="504">visible, hidden, oracle, regression</text>
+  <rect class="runtime" x="390" y="540" width="285" height="58" rx="6"/>
+  <text class="label" x="410" y="564">Reward Engine</text>
+  <text class="small" x="410" y="584">components, penalties, 15-point cap</text>
+  <rect class="runtime" x="390" y="620" width="285" height="58" rx="6"/>
+  <text class="label" x="410" y="644">Episode Artifact Logger</text>
+  <text class="small" x="410" y="664">JSONL transcript + verifier + diff</text>
 
-  <rect class="group" x="840" y="80" width="370" height="235" rx="10"/>
-  <text class="groupTitle" x="865" y="115">Single LLM Agent</text>
-  <rect class="node3" x="870" y="145" width="300" height="56" rx="8"/>
-  <text class="label" x="895" y="179">Observation Parser</text>
-  <rect class="node3" x="870" y="220" width="300" height="56" rx="8"/>
-  <text class="label" x="895" y="254">Policy + Code Reasoning</text>
+  <rect class="group" x="760" y="145" width="240" height="270" rx="8"/>
+  <text class="groupTitle" x="785" y="180">Single LLM Agent</text>
+  <rect class="agent" x="790" y="210" width="180" height="58" rx="6"/>
+  <text class="label" x="810" y="234">Observation Parser</text>
+  <rect class="agent" x="790" y="285" width="180" height="58" rx="6"/>
+  <text class="label" x="810" y="309">AuthZ + Code Reasoning</text>
+  <rect class="agent" x="790" y="360" width="180" height="58" rx="6"/>
+  <text class="label" x="810" y="384">JSON Action</text>
+  <text class="small" x="810" y="404">discover, patch, test</text>
 
-  <rect class="group" x="840" y="360" width="370" height="330" rx="10"/>
-  <text class="groupTitle" x="865" y="395">Training, Evaluation, Demo</text>
-  <rect class="node4" x="870" y="425" width="300" height="56" rx="8"/>
-  <text class="label" x="895" y="459">Rollout Loop</text>
-  <rect class="node4" x="870" y="500" width="300" height="56" rx="8"/>
-  <text class="label" x="895" y="534">TRL GRPO + LoRA</text>
-  <rect class="node4" x="870" y="575" width="300" height="56" rx="8"/>
-  <text class="label" x="895" y="609">Trackio + Held-out Eval</text>
+  <rect class="group" x="1040" y="80" width="250" height="610" rx="8"/>
+  <text class="groupTitle" x="1065" y="115">Training / Eval / Demo</text>
+  <rect class="ops" x="1065" y="145" width="200" height="58" rx="6"/>
+  <text class="label" x="1085" y="169">Parallel Rollouts</text>
+  <rect class="ops" x="1065" y="230" width="200" height="58" rx="6"/>
+  <text class="label" x="1085" y="254">TRL GRPO + LoRA</text>
+  <rect class="ops" x="1065" y="315" width="200" height="58" rx="6"/>
+  <text class="label" x="1085" y="339">Trackio Curves</text>
+  <rect class="ops" x="1065" y="400" width="200" height="58" rx="6"/>
+  <text class="label" x="1085" y="424">Held-out Family Eval</text>
+  <rect class="ops" x="1065" y="485" width="200" height="58" rx="6"/>
+  <text class="label" x="1085" y="509">Demo Artifacts</text>
 
-  <path class="edge" d="M165 217 L165 242"/>
-  <path class="edge" d="M165 314 L165 339"/>
-  <path class="edge" d="M165 411 L165 436"/>
-  <path class="edge" d="M165 508 L165 555"/>
-  <path class="edge" d="M275 595 L380 180"/>
-  <path class="edge" d="M550 180 L590 180"/>
-  <path class="edge" d="M675 215 L675 260"/>
-  <path class="edge" d="M570 338 L465 382"/>
-  <path class="edge" d="M570 338 L675 382"/>
-  <path class="edge" d="M675 464 L465 515"/>
-  <path class="edge" d="M550 556 L590 556"/>
-  <path class="edge" d="M760 556 L870 453"/>
-  <path class="edge" d="M760 300 L870 173"/>
-  <path class="edge" d="M870 248 L760 300"/>
-  <path class="edge" d="M1020 481 L1020 500"/>
-  <path class="edge" d="M1020 556 L1020 575"/>
-  <path class="edge" d="M870 528 L760 180"/>
+  <path class="edge" d="M295 518 C330 518 345 170 390 170"/>
+  <path class="edge" d="M675 330 C720 330 745 330 790 330"/>
+  <path class="edge" d="M790 390 C740 390 725 330 675 330"/>
+  <path class="edge" d="M675 570 C815 570 925 170 1065 170"/>
+  <path class="edge" d="M1165 543 C1165 735 175 735 175 289"/>
 </svg>

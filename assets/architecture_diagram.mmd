@@ -1,46 +1,51 @@
-flowchart LR
-    subgraph Factory["Scenario Factory"]
-        Policy["Policy graph\nusers, roles, tenants, ownership"]
-        Templates["FastAPI template renderer\nroutes, services, auth helpers"]
-        Mutator["A01 bug mutator\none injected authorization defect"]
-        Fixtures["Fixture generator\nvisible tests + hidden facts"]
-        Compiler["Scenario compiler\nseeded workspace"]
-        Policy --> Compiler
-        Templates --> Compiler
+flowchart TB
+    subgraph Factory["Scenario + Curriculum Factory"]
+        Policy["Policy graph generator\nusers, roles, tenants, ownership"]
+        Curriculum["Curriculum controller\nmastery, weak spots, difficulty tier"]
+        Designer["Bounded adversarial designer\nsafe local scenario targets"]
+        Templates["Template renderer\nFastAPI routes, services, auth helpers"]
+        Mutator["A01 bug mutator\nIDOR, tenant, role, public-route traps"]
+        Compiler["ScenarioSpec + oracle\nvisible hints + hidden policy tuples"]
+        Policy --> Designer
+        Curriculum --> Designer
+        Designer --> Templates
+        Templates --> Mutator
         Mutator --> Compiler
-        Fixtures --> Compiler
     end
 
     subgraph Runtime["CyberSecurity_OWASP OpenEnv Runtime"]
-        Reset["reset(seed)\ncompile fresh scenario"]
-        Env["Environment state\nphase, history, metrics, hidden facts"]
-        Tools["Typed step(action) tools\ninspect, read, request, patch, test, submit"]
-        Sandbox["Generated local app workspace\neditable app files only"]
-        Verifier["Deterministic verifier\nsecurity + regression + public routes"]
-        Reward["Reward engine\nstable component breakdown"]
-        App["FastAPI OpenEnv server\n/ws, /reset, /step, /state"]
-        Reset --> Env
-        Env --> Tools
+        Reset["reset(seed, difficulty)\nselect curriculum profile"]
+        State["Episode state store\nphase, history, metrics, weakness, patch diff"]
+        Tools["Typed action tools\ninspect, request, patch, visible tests"]
+        Sandbox["Ephemeral app sandbox\ncode workspace + fixture DB + local API model"]
+        Verifier["Multi-layer verifier\nvisible, hidden, oracle, regression"]
+        Reward["Deterministic reward engine\ncomponents + penalties"]
+        Logger["Episode artifact logger\nJSONL transcript + verifier + diff"]
+        App["FastAPI / WebSocket server\n/ws, /reset, /step, /state, /web"]
+        Reset --> State
+        State --> Tools
         Tools <--> Sandbox
-        Tools --> Verifier
+        Sandbox --> Verifier
         Verifier --> Reward
-        Reward --> Env
-        Env --> App
+        Reward --> State
+        State --> Logger
+        Logger --> Curriculum
+        State --> App
     end
 
     subgraph Agent["Single LLM Agent"]
         Obs["Observation parser"]
-        Reason["Policy and code reasoning"]
-        Act["One JSON action"]
+        Reason["AuthZ + code reasoning"]
+        Act["Discover -> Diagnose -> Patch -> Test\none JSON action at a time"]
         Obs --> Reason --> Act
     end
 
-    subgraph Ops["Training, Evaluation, Demo"]
-        Rollout["Rollout loop\nreset -> step* -> terminal reward"]
-        GRPO["TRL GRPO / LoRA training"]
-        Trackio["Trackio metrics\nreward and pass rates"]
-        Eval["Held-out evaluation\nunseen seeds/layouts/domains"]
-        Artifacts["Rollout artifacts\nbefore/after traces"]
+    subgraph Ops["Training / Evaluation / Demo"]
+        Rollout["Parallel rollout loop\nreset -> step* -> terminal reward"]
+        GRPO["TRL GRPO + LoRA"]
+        Trackio["Trackio reward curves\npass rates and failure modes"]
+        Eval["Held-out family eval\nbase vs trained model"]
+        Artifacts["Demo artifacts\nbefore/after traces + JSONL"]
         Rollout --> GRPO --> Trackio --> Eval --> Artifacts
     end
 

@@ -35,6 +35,8 @@ image = (
         ignore=[
             ".git",
             ".venv",
+            ".env",
+            ".env.*",
             "__pycache__",
             ".pytest_cache",
             "outputs",

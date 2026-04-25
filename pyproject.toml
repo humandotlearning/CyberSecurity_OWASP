@@ -47,3 +47,14 @@ server = "CyberSecurity_OWASP.server.app:main"
 include-package-data = true
 packages = ["CyberSecurity_OWASP", "CyberSecurity_OWASP.server"]
 package-dir = { "CyberSecurity_OWASP" = ".", "CyberSecurity_OWASP.server" = "server" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "codex_tmp_tf",
+    "outputs",
+    "openenv_CyberSecurity_OWASP.egg-info",
+]

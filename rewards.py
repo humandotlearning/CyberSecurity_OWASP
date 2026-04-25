@@ -41,21 +41,28 @@ def compute_reward(
         reward["visible_tests"] = 1.0 if visible.get("passed") else 0.0
     elif action.tool_name == "submit_fix":
         security = verifier_result.get("security", {})
+        oracle = verifier_result.get("oracle_matrix", {})
         regression = verifier_result.get("regression", {})
         public_routes = verifier_result.get("public_routes", {})
         quality = verifier_result.get("patch_quality", {})
         visible = verifier_result.get("visible", {})
-        reward["security"] = 5.0 if security.get("passed") else -6.0
+        security_passed = bool(security.get("passed") and oracle.get("passed", True))
+        reward["security"] = 5.0 if security_passed else -6.0
         reward["regression"] = 3.0 if regression.get("passed") else -5.0
         reward["public_routes"] = 1.0 if public_routes.get("passed") else -3.0
         reward["patch_quality"] = 2.0 if quality.get("passed") else 0.0
+        if quality.get("passed") and _followed_repair_phase_order(state):
+            reward["patch_quality"] += 0.5
         reward["visible_tests"] = 1.0 if visible.get("passed") else -6.0
         if quality.get("hardcoded"):
             reward["anti_cheat"] -= 4.0
         if quality.get("deny_all"):
             reward["safety"] -= 5.0
 
-    flags = verifier_result.get("anti_cheat_flags", []) or []
+    flags = sorted(
+        set(verifier_result.get("anti_cheat_flags", []) or [])
+        | set(state.anti_cheat_flags or [])
+    )
     if flags:
         if "external_network_attempt" in flags:
             reward["safety"] -= 8.0
@@ -64,6 +71,21 @@ def compute_reward(
         if "hardcoded_hidden_identifier" in flags:
             reward["anti_cheat"] -= 4.0
 
+    if verifier_result.get("invalid_action"):
+        reward["safety"] -= 0.5
+    if verifier_result.get("repeated_action"):
+        reward["safety"] -= 0.2
+
     total = sum(value for key, value in reward.items() if key != "total")
     reward["total"] = min(15.0, total) if total > 0 else total
     return reward
+
+
+def _followed_repair_phase_order(state: CyberSecurityOWASPState) -> bool:
+    tools = [item.get("tool_name") for item in state.action_history]
+    required = ["submit_finding", "patch_file", "run_visible_tests", "submit_fix"]
+    cursor = 0
+    for tool in tools:
+        if cursor < len(required) and tool == required[cursor]:
+            cursor += 1
+    return cursor == len(required)

@@ -67,6 +67,11 @@ def rollout_once(trainer, env, tokenizer=None, dataset_prompt: str = "", max_ste
 
     final_breakdown = getattr(observation, "reward_breakdown", {}) or {}
     state = env.state if not callable(getattr(env, "state", None)) else env.state()
+    verifier = getattr(state, "verification_summary", {}) or {}
+    anti_cheat_flags = getattr(state, "anti_cheat_flags", []) or []
+    invalid_actions = [
+        obs for obs in observation_trace if obs.get("last_action_valid") is False
+    ]
     return {
         "prompt_ids": prompt_ids,
         "completion_ids": completion_ids,
@@ -79,6 +84,16 @@ def rollout_once(trainer, env, tokenizer=None, dataset_prompt: str = "", max_ste
         "reward_anti_cheat": float(final_breakdown.get("anti_cheat", 0.0)),
         "success": bool(getattr(state, "success", False)),
         "episode_length": len(action_trace),
+        "exploit_blocked": bool((verifier.get("security") or {}).get("passed", False)),
+        "regression_preserved": bool((verifier.get("regression") or {}).get("passed", False)),
+        "public_routes_preserved": bool((verifier.get("public_routes") or {}).get("passed", False)),
+        "anti_cheat_pass": not bool(anti_cheat_flags),
+        "invalid_action_rate": len(invalid_actions) / max(1, len(action_trace)),
+        "timeout": getattr(state, "failure_reason", None) == "max_steps_exceeded",
+        "safety_violation": bool(
+            any("network" in flag or "unsafe" in flag for flag in anti_cheat_flags)
+        ),
+        "episode_artifact_path": getattr(state, "episode_artifact_path", None),
         "actions": action_trace,
         "observations": observation_trace,
     }

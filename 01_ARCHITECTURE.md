@@ -22,64 +22,56 @@ Editable source: `assets/architecture_diagram.mmd`
 
 ```mermaid
 flowchart TB
-    %% =========================
-    %% Offline Build Layer
-    %% =========================
-    subgraph A[Offline Scenario Factory]
-        A1[Policy Graph Generator\nroles, users, tenants, ownership, route intent]
-        A2[App Template Library\nFastAPI, Express, Django MVP templates]
-        A3[Bug Injector\nmissing guard, IDOR, tenant leak, role confusion, query omission]
-        A4[Scenario Compiler\nmaterializes app + DB + public tests + hidden invariants]
-        A5[Split Manager\ntrain seeds, validation seeds, hidden held-out seeds]
-        A1 --> A4
-        A2 --> A4
-        A3 --> A4
-        A5 --> A4
+    subgraph A[Scenario + Curriculum Factory]
+        A1[Policy Graph Generator\nroles, users, tenants, ownership]
+        A2[Curriculum Controller\nmastery, weak spots, difficulty tier]
+        A3[Bounded Adversarial Designer\nsafe local scenario targets]
+        A4[Template Renderer\nFastAPI routes, services, auth helpers]
+        A5[A01 Bug Mutator\nIDOR, tenant, role, public-route traps]
+        A6[ScenarioSpec + Oracle\nvisible hints + hidden policy tuples]
+        A1 --> A3
+        A2 --> A3
+        A3 --> A4 --> A5 --> A6
     end
 
-    %% =========================
-    %% OpenEnv Runtime
-    %% =========================
     subgraph B[CyberSecurity_OWASP OpenEnv Server]
-        B1[reset\(\)\nselect scenario + start sandbox]
-        B2[Sandbox App Runtime\nlocal app, DB fixture, logs, route map]
-        B3[Tool API exposed through step\(action\)\nReadFile, ListRoutes, SendLocalRequest, RunTests, ApplyPatch, SubmitFix]
-        B4[State Store\nepisode_id, step_count, scenario_id, patch diff, test history]
-        B5[Deterministic Reward Engine\npolicy tests + hidden tests + regression tests + penalties]
-        B6[state\(\)\nstructured metadata for debugging/eval]
-        B1 --> B2
-        B2 --> B3
-        B3 --> B4
-        B4 --> B5
-        B4 --> B6
+        B1[reset\(seed, difficulty\)\nselect curriculum profile]
+        B2[Episode State Store\nphase, history, metrics, weakness, patch diff]
+        B3[Typed Action Tools\ninspect, request, patch, visible tests]
+        B4[Ephemeral App Sandbox\ncode workspace + fixtures + local API model]
+        B5[Multi-layer Verifier\nvisible, hidden, oracle, regression]
+        B6[Deterministic Reward Engine\nstable components + penalties]
+        B7[Episode Artifact Logger\nJSONL transcript + verifier + diff]
+        B8[state\(\)\nstructured metadata for debugging/eval]
+        B1 --> B2 --> B3
+        B3 <--> B4
+        B4 --> B5 --> B6 --> B2
+        B2 --> B7 --> A2
+        B2 --> B8
     end
 
-    %% =========================
-    %% Agent + Training
-    %% =========================
     subgraph C[Single LLM Agent]
         C1[Observation Parser]
-        C2[Planner\npolicy reasoning + patch strategy]
-        C3[Action Generator\nchooses next OpenEnv action]
+        C2[AuthZ + Code Reasoning]
+        C3[Discover → Diagnose → Patch → Test\none JSON action]
         C1 --> C2 --> C3
     end
 
     subgraph D[Training + Evaluation]
-        D1[Rollout Loop\nreset → step* → final reward]
-        D2[GRPO / TRL / Unsloth Training]
-        D3[Trackio Metrics\nreward curves, pass rates, patch size, steps]
-        D4[Held-out Eval Suite\nunseen templates, seeds, names, route structures]
-        D5[Demo Artifacts\nbefore/after traces, mini-blog, 2-minute video]
-        D1 --> D2 --> D3
-        D3 --> D4 --> D5
+        D1[Parallel Rollout Loop\nreset → step* → terminal reward]
+        D2[TRL GRPO + LoRA]
+        D3[Trackio Metrics\nreward curves, pass rates, failure modes]
+        D4[Held-out Family Eval\nbase vs trained model]
+        D5[Demo Artifacts\nbefore/after traces + JSONL]
+        D1 --> D2 --> D3 --> D4 --> D5
     end
 
-    A4 --> B1
+    A6 --> B1
     C3 -->|typed action| B3
     B3 -->|observation + reward + done| C1
-    B5 --> D1
+    B6 --> D1
     D2 --> C1
-    B5 --> D4
+    B6 --> D4
 ```
 
 ## 3. Component responsibilities
@@ -112,6 +104,13 @@ The scenario compiler is the main anti-overfitting mechanism. It should vary:
 - file layout;
 - visible test coverage;
 - hidden invariant seeds.
+
+The runtime now treats curriculum and adversarial targeting as first-class scenario inputs:
+
+- `CurriculumController` tracks target weakness mastery, recent reward trend, failure counts, and difficulty tier.
+- `BoundedAdversarialDesigner` chooses safe synthetic lab targets such as same-role cross-object access, cross-tenant boundaries, public-route overlocking, alternate-service reachability, and visible-test-only traps.
+- `ScenarioFactory` combines the policy graph, curriculum profile, adversarial target, renderer, and hidden oracle metadata into one deterministic scenario spec.
+- Hidden-eval episodes hold out scenario families, not only seeds, by marking evaluation-only scenario-family metadata in state rather than observations.
 
 ### 3.2 Policy Graph Generator
 
@@ -222,16 +221,19 @@ Observations should be compact and structured.
 ```python
 @dataclass
 class CyberSecurityOWASPObservation(Observation):
+    phase: Literal["discover", "patch", "done"]
     message: str
-    visible_policy_summary: str
-    route_summary: list[dict]
-    last_action_result: dict
-    public_test_summary: dict
-    patch_summary: dict
+    task_brief: str
+    visible_policy_hint: dict
+    workspace_summary: dict
+    available_actions: list[str]
+    last_tool_result: str
+    visible_test_result: str | None = None
+    reward_breakdown: dict[str, float] = field(default_factory=dict)
     done_reason: str | None = None
 ```
 
-Do not expose hidden test bodies, hidden expected outputs, or seed-specific solution hints.
+The policy hint is deliberately partial. It may include product rules, fixture aliases, route summaries, and public-route intent, but it must not expose the hidden oracle matrix, hidden test bodies, injected bug labels, or held-out family labels.
 
 ### 3.7 State schema
 
@@ -241,17 +243,18 @@ State should support debugging and training analytics.
 @dataclass
 class CyberSecurityOWASPState(State):
     episode_id: str
-    scenario_id: str
-    split: Literal["train", "validation", "heldout"]
+    task_id: str
+    split: Literal["train", "validation", "hidden_eval"]
     step_count: int = 0
-    max_steps: int = 30
+    max_steps: int = 40
+    difficulty_tier: str = "warmup"
     scenario_family: str = ""
-    app_template: str = ""
-    files_touched: list[str] = field(default_factory=list)
-    public_tests_passed: int = 0
-    public_tests_total: int = 0
-    hidden_tests_passed: int = 0
-    hidden_tests_total: int = 0
+    template_id: str = "fastapi_basic"
+    target_weakness: str = ""
+    curriculum_snapshot: dict = field(default_factory=dict)
+    verification_summary: dict = field(default_factory=dict)
+    patch_diff: str = ""
+    episode_artifact_path: str | None = None
     accumulated_reward: float = 0.0
 ```
 
@@ -259,9 +262,10 @@ class CyberSecurityOWASPState(State):
 
 ```text
 1. reset()
-   - sample train/validation scenario seed
-   - compile app from policy graph + template + injected bug
-   - start local sandbox app and DB fixture
+   - curriculum selects difficulty tier and target weakness
+   - bounded adversarial designer chooses a safe local scenario target
+   - scenario factory compiles app from policy graph + template + injected bug
+   - initialize ephemeral app sandbox and fixture state
    - return initial observation
 
 2. agent loop
@@ -275,52 +279,58 @@ class CyberSecurityOWASPState(State):
    - freeze patch
    - run public tests
    - run hidden authorization invariants
-   - run regression tests
+   - run policy-oracle matrix
+   - run regression and public-route preservation tests
    - compute deterministic reward
    - return final observation, reward, done=True
 
 4. logging
-   - record scenario_id, action trace, patch diff, reward components
+   - append JSONL artifact with scenario metadata, action trace, observations, patch diff, verifier result, and reward components
+   - feed terminal success/failure back into curriculum mastery tracking
    - send metrics to Trackio during training/eval
 ```
 
 ## 5. Reward design
 
-The reward should be deterministic, decomposed, and resistant to reward hacking.
+The reward should be deterministic, decomposed, and resistant to reward hacking. The maximum terminal reward remains **15.0** and high reward requires deterministic verifier success, not explanation quality.
 
-Recommended reward formula:
+Stable reward keys:
 
-```text
-R = 0.35 * public_policy_tests
-  + 0.30 * hidden_authz_invariants
-  + 0.15 * regression_preservation
-  + 0.10 * evidence_quality
-  + 0.05 * patch_minimality
-  + 0.05 * efficiency
-  - penalties
+```python
+{
+    "discovery": 0.0,
+    "security": 0.0,
+    "regression": 0.0,
+    "public_routes": 0.0,
+    "patch_quality": 0.0,
+    "visible_tests": 0.0,
+    "safety": 0.0,
+    "anti_cheat": 0.0,
+    "total": 0.0,
+}
 ```
 
 ### Reward components
 
-| Component | Weight | What it rewards |
-|---|---:|---|
-| Public policy tests | 0.35 | Agent fixes known failing behavior. |
-| Hidden authz invariants | 0.30 | Patch generalizes beyond visible tests. |
-| Regression preservation | 0.15 | Valid user flows and intended public routes still work. |
-| Evidence quality | 0.10 | Agent gathered relevant policy/test/file evidence before patching. |
-| Patch minimality | 0.05 | Small focused patches instead of broad rewrites. |
-| Efficiency | 0.05 | Fewer wasted steps and repeated actions. |
+| Component | Purpose |
+|---|---|
+| `discovery` | Valid local evidence and correct violated policy rule. |
+| `security` | Hidden exploit blocking plus policy-oracle matrix pass. |
+| `regression` | Legitimate owner/admin/support flows still work. |
+| `public_routes` | Intentionally public routes remain public. |
+| `patch_quality` | Localized policy-aligned patch and efficient phase order. |
+| `visible_tests` | Visible tests pass and app still boots. |
+| `safety` | Penalizes invalid action patterns, unsafe targets, timeouts, and deny-all behavior. |
+| `anti_cheat` | Penalizes hidden-file probing, hardcoded fixture IDs, and test/oracle tampering. |
 
 ### Penalties
 
 | Penalty | Trigger |
 |---|---|
-| `-0.25` | Breaks public route intentionally marked public. |
-| `-0.25` | Deletes tests, policy file, or route instead of fixing authorization. |
-| `-0.20` | Hardcodes seed-specific IDs, users, tenants, or hidden assumptions. |
-| `-0.15` | Over-broad denial that blocks legitimate authorized users. |
-| `-0.10` | Patch exceeds file or diff-size budget. |
-| `-1.00` | Attempts external network access, credential extraction, persistence, or unsafe behavior. |
+| public route penalty | Breaks a route intentionally marked public. |
+| anti-cheat penalty | Deletes or probes tests, hidden files, reward code, oracle data, or host paths. |
+| hardcoding penalty | Hardcodes seed-specific IDs, users, tenants, or hidden assumptions. |
+| safety penalty | Over-broad denial, malformed/invalid actions, repeated failed actions, or external target attempts. |
 
 The LLM judge, if used at all, should only annotate trace quality for analysis. It must not decide security-critical reward.
 
@@ -488,3 +498,4 @@ Expected endpoints:
 | OpenEnv deployment docs | Informs HF Spaces deployment, endpoints, Docker workflow, and installable client package. | 8.5/10 |
 | Hackathon judging criteria | Informs demo priorities: innovation, storytelling, reward improvement, and training pipeline. | 9/10 |
 | TRL/OpenEnv training example | Informs rollout function, decomposed reward functions, and Trackio logging pattern. | 8/10 |
+| Kube SRE Gym README | Informs the closed-loop pattern: adversarial scenario design, curriculum mastery tracking, real tool interaction, verification, and artifact-driven storytelling. | 8/10 |

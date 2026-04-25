@@ -21,7 +21,7 @@ tags:
 inspect generated app + policy -> discover authorization bug -> submit finding -> patch code -> preserve intended behavior
 ```
 
-The current implementation includes a functional MVP scenario: an invoices FastAPI-style app with one injected OWASP A01 BOLA/IDOR defect, visible tests, hidden deterministic verifier checks, anti-cheat safeguards, and decomposed reward.
+The current implementation includes a functional closed-loop MVP scenario: an invoices FastAPI-style app with one injected OWASP A01 BOLA/IDOR defect, curriculum-aware scenario selection, bounded adversarial targeting, an ephemeral app sandbox, multi-layer deterministic verifier checks, anti-cheat safeguards, JSONL episode artifacts, and decomposed reward.
 
 ## Diagrams
 
@@ -98,19 +98,35 @@ Terminal reward uses stable components:
 }
 ```
 
-The verifier rewards blocking the hidden exploit while preserving legitimate owner/admin behavior and intentionally public routes. It penalizes deny-all fixes, hardcoded IDs, hidden file probes, external URL attempts, and test/fixture tampering.
+The verifier rewards blocking the hidden exploit while preserving legitimate owner/admin behavior and intentionally public routes. Terminal scoring requires visible checks, hidden authorization checks, a policy-oracle matrix, regression checks, public-route preservation, and patch-quality checks. It penalizes deny-all fixes, hardcoded IDs, repeated/invalid action patterns, hidden file probes, external URL attempts, and test/fixture tampering.
 
 ## Scenario Generation
 
-`reset(seed)` compiles a fresh isolated workspace under a temp directory. The MVP compiler generates:
+`reset(seed)` asks the `CurriculumController` for a difficulty tier and target weakness, then `ScenarioFactory` uses a bounded adversarial designer to compile a fresh isolated workspace under a temp directory. The MVP compiler generates:
 
 - invoices domain policy graph;
+- bounded adversarial target metadata such as same-role cross-object access, cross-tenant access, public-route overlocking traps, alternate route/service reachability, or visible-test-only edge cases;
 - randomized users, tenants, invoices, and IDs;
 - generated app files under `app/`;
 - visible tests under `tests/test_visible.py`;
-- hidden facts kept only in state for deterministic verification.
+- hidden facts, oracle tuples, scenario family metadata, and verifier targets kept out of observations.
 
 Additional domains and bug families are scaffolded for extension.
+
+## Runtime Components
+
+The OpenEnv runtime is split into small server modules:
+
+- `server/curriculum.py` tracks mastery, weak spots, reward trend, and difficulty tier.
+- `server/adversarial_designer.py` chooses safe synthetic scenario targets from tracked weaknesses.
+- `server/scenario_factory.py` compiles the generated app, visible hints, hidden facts, scenario family, and template metadata.
+- `server/app_sandbox.py` handles editable workspace reads, patches, local requests, and OpenAPI summaries.
+- `server/action_tools.py` dispatches typed tools through the sandbox.
+- `server/authz_oracle.py` builds the hidden allowed/denied user-resource-action matrix.
+- `server/verifier.py` aggregates visible tests, hidden tests, oracle matrix, regression/public-route checks, and patch quality.
+- `server/episode_logger.py` appends JSONL rollouts under `outputs/rollouts/`.
+
+The agent sees partial observations only: product rules, fixture aliases, route summaries, visible test results, and action errors. Hidden tests, oracle tuples, injected bug labels, and held-out scenario-family labels stay internal.
 
 ## Testing
 
@@ -118,7 +134,7 @@ Additional domains and bug families are scaffolded for extension.
 uv run --extra dev pytest
 ```
 
-The suite covers model serialization, reset/step/state behavior, seed reproducibility, invalid actions, reward outcomes, anti-cheat checks, and scripted rollout policies.
+The suite covers model serialization, reset/step/state behavior, seed reproducibility, invalid actions, reward outcomes, anti-cheat checks, scripted rollout policies, curriculum selection, adversarial targeting, held-out scenario families, oracle checks, verifier aggregation, and episode artifact logging.
 
 ## Training Scaffold
 

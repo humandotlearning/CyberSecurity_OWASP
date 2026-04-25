@@ -135,6 +135,8 @@ def _training_image() -> modal.Image:
             ignore=[
                 ".git",
                 ".venv",
+                ".env",
+                ".env.*",
                 "__pycache__",
                 ".pytest_cache",
                 "outputs",

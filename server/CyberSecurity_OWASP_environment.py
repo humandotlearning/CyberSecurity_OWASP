@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import shutil
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -16,16 +15,20 @@ try:
         CyberSecurityOWASPObservation,
         CyberSecurityOWASPState,
     )
-    from ..scenario_compiler import compile_scenario
-    from ..safety import is_local_route
-    from ..validators import detect_cheating, is_path_allowed, simulate_request
+    from ..validators import detect_cheating
+    from .action_tools import ActionTools
+    from .curriculum import CurriculumController
+    from .episode_logger import EpisodeArtifactLogger
     from .reward_engine import evaluate_action
+    from .scenario_factory import ScenarioFactory
 except ImportError:  # pragma: no cover
     from models import CyberSecurityOWASPAction, CyberSecurityOWASPObservation, CyberSecurityOWASPState
-    from scenario_compiler import compile_scenario
-    from safety import is_local_route
-    from validators import detect_cheating, is_path_allowed, simulate_request
+    from validators import detect_cheating
+    from server.action_tools import ActionTools
+    from server.curriculum import CurriculumController
+    from server.episode_logger import EpisodeArtifactLogger
     from server.reward_engine import evaluate_action
+    from server.scenario_factory import ScenarioFactory
 
 
 ALLOWED_TOOLS = {
@@ -67,6 +70,9 @@ class CybersecurityOwaspEnvironment(
         self._visible_policy_hint: dict[str, Any] = {}
         self._workspace_summary: dict[str, Any] = {}
         self._last_done_observation: CyberSecurityOWASPObservation | None = None
+        self._curriculum = CurriculumController()
+        self._scenario_factory = ScenarioFactory()
+        self._episode_logger = EpisodeArtifactLogger()
 
     def reset(
         self,
@@ -78,15 +84,29 @@ class CybersecurityOwaspEnvironment(
     ) -> CyberSecurityOWASPObservation:
         self.close()
         actual_seed = int(seed if seed is not None else 0)
-        scenario = compile_scenario(actual_seed, split=split, difficulty=difficulty)
+        curriculum_profile = self._curriculum.select_profile(
+            seed=actual_seed,
+            split=split,
+            requested_difficulty=difficulty,
+        )
+        scenario = self._scenario_factory.compile_scenario(
+            actual_seed,
+            split=split,
+            difficulty=difficulty,
+            curriculum_profile=curriculum_profile,
+        )
         self._state = CyberSecurityOWASPState(
             episode_id=episode_id or str(uuid4()),
             task_id=scenario["task_id"],
             seed=actual_seed,
             split=split,
-            difficulty=difficulty,
+            difficulty=scenario["difficulty"],
+            difficulty_tier=scenario["difficulty_tier"],
             domain=scenario["domain"],
             bug_family=scenario["bug_family"],
+            scenario_family=scenario["scenario_family"],
+            template_id=scenario["template_id"],
+            target_weakness=scenario["target_weakness"],
             phase="discover",
             step_count=0,
             max_steps=40,
@@ -94,6 +114,7 @@ class CybersecurityOwaspEnvironment(
             success=False,
             visible_facts={"workspace_summary": scenario["workspace_summary"]},
             hidden_facts=scenario["hidden_facts"],
+            curriculum_snapshot=scenario["curriculum_snapshot"],
             metrics={"reset_count": 1},
         )
         self._task_brief = scenario["task_brief"]
@@ -124,7 +145,12 @@ class CybersecurityOwaspEnvironment(
         )
 
         if action.tool_name not in ALLOWED_TOOLS[self._state.phase]:
-            verifier, reward = evaluate_action(self._state, action, anti_cheat_flags)
+            verifier, reward = evaluate_action(
+                self._state,
+                action,
+                anti_cheat_flags,
+                invalid_action=True,
+            )
             return self._finish_step(
                 "Action is not allowed in the current phase.",
                 reward,
@@ -143,7 +169,12 @@ class CybersecurityOwaspEnvironment(
                 visible_test_result=visible_tests,
             )
         except Exception as exc:  # keep malformed agent actions from crashing the server
-            verifier, reward = evaluate_action(self._state, action, anti_cheat_flags)
+            verifier, reward = evaluate_action(
+                self._state,
+                action,
+                anti_cheat_flags,
+                invalid_action=True,
+            )
             return self._finish_step(
                 "Tool execution failed.",
                 reward,
@@ -164,91 +195,48 @@ class CybersecurityOwaspEnvironment(
     def _execute(
         self, action: CyberSecurityOWASPAction, anti_cheat_flags: list[str]
     ) -> tuple[str, dict, dict[str, float], str | None]:
-        verifier: dict = {"anti_cheat_flags": anti_cheat_flags}
-        reward = {key: 0.0 for key in (
-            "discovery",
-            "security",
-            "regression",
-            "public_routes",
-            "patch_quality",
-            "visible_tests",
-            "safety",
-            "anti_cheat",
-            "total",
-        )}
-        visible_tests = None
-        args = action.arguments or {}
+        verifier, reward = evaluate_action(self._state, action, anti_cheat_flags)
 
-        if action.tool_name == "noop":
-            return "No operation.", verifier, reward, None
-        if action.tool_name == "inspect_policy_graph":
-            return json.dumps(self._visible_policy_hint, indent=2, sort_keys=True), verifier, reward, None
-        if action.tool_name == "list_routes":
-            return json.dumps(self._workspace_summary["routes"], indent=2), verifier, reward, None
-        if action.tool_name == "read_openapi":
-            return json.dumps(
-                {
-                    "openapi": "3.1.0",
-                    "info": {"title": "Generated invoices app", "version": "0.1.0"},
-                    "paths": {
-                        "/health": {"get": {"x-public": True}},
-                        "/invoices/{invoice_id}": {"get": {"x-public": False}},
-                    },
-                },
-                indent=2,
-            ), verifier, reward, None
-        if action.tool_name == "read_file":
-            path = self._resolve_path(str(args.get("path", "")))
-            return path.read_text(encoding="utf-8"), verifier, reward, None
-        if action.tool_name == "search_code":
-            return self._search_code(str(args.get("query", ""))), verifier, reward, None
-        if action.tool_name == "send_local_request":
-            if not is_local_route(str(args.get("path", ""))):
-                raise ValueError("send_local_request only accepts local route paths")
-            response = simulate_request(
+        if action.tool_name in {
+            "noop",
+            "inspect_policy_graph",
+            "list_routes",
+            "read_openapi",
+            "read_file",
+            "search_code",
+            "send_local_request",
+            "compare_identities",
+            "patch_file",
+        }:
+            result = ActionTools(
                 self._state,
-                str(args.get("method", "GET")),
-                str(args.get("path", "")),
-                args.get("user_id"),
-            )
-            return json.dumps(response, indent=2, sort_keys=True), verifier, reward, None
-        if action.tool_name == "compare_identities":
-            path = str(args.get("path", ""))
-            first = str(args.get("first_user_id", ""))
-            second = str(args.get("second_user_id", ""))
-            if not is_local_route(path):
-                raise ValueError("compare_identities only accepts local route paths")
-            response = {
-                "first": simulate_request(self._state, str(args.get("method", "GET")), path, first),
-                "second": simulate_request(self._state, str(args.get("method", "GET")), path, second),
-            }
-            return json.dumps(response, indent=2, sort_keys=True), verifier, reward, None
+                self._visible_policy_hint,
+                self._workspace_summary,
+            ).execute(action)
+            return result.message, verifier, reward, result.visible_test_result
         if action.tool_name == "submit_finding":
             verifier, reward = evaluate_action(self._state, action, anti_cheat_flags)
+            self._state.verification_summary = verifier
             if verifier.get("finding", {}).get("valid"):
                 self._state.finding_submitted = True
                 self._state.phase = "patch"
                 return "Finding accepted. Patch phase unlocked.", verifier, reward, None
             return "Finding was not specific enough to unlock patching.", verifier, reward, None
-        if action.tool_name == "patch_file":
-            path = self._resolve_path(str(args.get("path", "")), write=True)
-            if "content" in args:
-                path.write_text(str(args["content"]), encoding="utf-8")
-            else:
-                self._apply_unified_diff(path, str(args.get("diff", "")))
-            return f"Patched {args.get('path')}.", verifier, reward, None
         if action.tool_name == "run_visible_tests":
             verifier, reward = evaluate_action(self._state, action, anti_cheat_flags)
+            self._state.verification_summary = verifier
             visible_tests = json.dumps(verifier.get("visible", {}), indent=2, sort_keys=True)
             return visible_tests, verifier, reward, visible_tests
         if action.tool_name == "submit_fix":
             verifier, reward = evaluate_action(self._state, action, anti_cheat_flags)
+            self._state.verification_summary = verifier
             self._state.patch_submitted = True
             security = verifier.get("security", {}).get("passed", False)
+            oracle = verifier.get("oracle_matrix", {}).get("passed", False)
             regression = verifier.get("regression", {}).get("passed", False)
             public = verifier.get("public_routes", {}).get("passed", False)
             quality = verifier.get("patch_quality", {}).get("passed", False)
-            self._state.success = bool(security and regression and public and quality)
+            self._state.success = bool(security and oracle and regression and public and quality)
             self._state.done = True
             self._state.phase = "done"
             self._state.failure_reason = None if self._state.success else "hidden_verifier_failed"
@@ -281,7 +269,10 @@ class CybersecurityOwaspEnvironment(
             visible_test_result=visible_test_result,
             done_reason=self._state.failure_reason,
         )
+        observation_record = obs.model_dump()
+        self._state.observation_history.append(observation_record)
         if self._state.done:
+            self._finalize_terminal_episode(observation_record)
             self._last_done_observation = obs
         return obs
 
@@ -314,53 +305,15 @@ class CybersecurityOwaspEnvironment(
             metadata={"episode_id": self._state.episode_id, "step_count": self._state.step_count},
         )
 
-    def _resolve_path(self, path: str, *, write: bool = False) -> Path:
-        allowed, normalized_or_error = is_path_allowed(self._state, path, write=write)
-        if not allowed:
-            raise ValueError(normalized_or_error)
-        return Path(str(self._state.hidden_facts["workspace"])) / normalized_or_error
-
-    def _search_code(self, query: str) -> str:
-        if not query:
-            raise ValueError("query is required")
-        results: list[str] = []
-        workspace = Path(str(self._state.hidden_facts["workspace"]))
-        for rel in self._state.hidden_facts.get("editable_files", []):
-            path = workspace / rel
-            text = path.read_text(encoding="utf-8")
-            for idx, line in enumerate(text.splitlines(), start=1):
-                if query.lower() in line.lower():
-                    results.append(f"{rel}:{idx}: {line}")
-        return "\n".join(results) or "No matches."
-
-    def _apply_unified_diff(self, path: Path, diff: str) -> None:
-        if not diff.strip():
-            raise ValueError("diff or content is required")
-        original = path.read_text(encoding="utf-8").splitlines(True)
-        output: list[str] = []
-        old_index = 0
-        lines = diff.splitlines(True)
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            if not line.startswith("@@"):
-                i += 1
-                continue
-            old_start = int(line.split()[1].split(",")[0][1:])
-            output.extend(original[old_index : old_start - 1])
-            old_index = old_start - 1
-            i += 1
-            while i < len(lines) and not lines[i].startswith("@@"):
-                hunk_line = lines[i]
-                if hunk_line.startswith(" "):
-                    output.append(original[old_index])
-                    old_index += 1
-                elif hunk_line.startswith("-"):
-                    old_index += 1
-                elif hunk_line.startswith("+"):
-                    output.append(hunk_line[1:])
-                elif hunk_line.startswith("\\"):
-                    pass
-                i += 1
-        output.extend(original[old_index:])
-        path.write_text("".join(output), encoding="utf-8")
+    def _finalize_terminal_episode(self, observation_record: dict[str, Any]) -> None:
+        if self._state.episode_artifact_path:
+            return
+        mastery = self._curriculum.record_episode(self._state)
+        self._state.curriculum_snapshot = {
+            **self._state.curriculum_snapshot,
+            "post_episode_mastery": mastery,
+        }
+        self._episode_logger.log_episode(
+            self._state,
+            final_observation=observation_record,
+        )
