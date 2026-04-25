@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 try:
     from .fixture_generator import visible_workspace_summary
@@ -16,11 +18,24 @@ except ImportError:  # pragma: no cover
     from template_renderer import render_fastapi_basic
 
 
+def _make_workspace(prefix: str) -> Path:
+    root = Path(os.getenv("CYBERSECURITY_OWASP_WORKSPACE_ROOT", tempfile.gettempdir()))
+    root.mkdir(parents=True, exist_ok=True)
+    for _ in range(100):
+        workspace = root / f"{prefix}{uuid4().hex[:12]}"
+        try:
+            workspace.mkdir()
+        except FileExistsError:
+            continue
+        return workspace
+    raise RuntimeError("Unable to create isolated scenario workspace")
+
+
 def compile_scenario(seed: int, split: str = "train", difficulty: int = 0) -> dict[str, Any]:
     """Compile one isolated MVP authorization-repair scenario."""
 
     compiled = build_invoice_policy(seed)
-    workspace = Path(tempfile.mkdtemp(prefix=f"cybersecurity_owasp_{split}_{seed}_"))
+    workspace = _make_workspace(prefix=f"cybersecurity_owasp_{split}_{seed}_")
     editable_files = render_fastapi_basic(workspace, compiled.public_hint, compiled.hidden_facts)
     task_id = f"{split}-invoices-bola-{seed}"
     hidden = dict(compiled.hidden_facts)

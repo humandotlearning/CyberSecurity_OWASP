@@ -62,12 +62,18 @@ class NoopTrainer:
 
 
 @app.function(image=image, timeout=60 * 30)
-def run_ephemeral_smoke(episodes: int = 4, seed_start: int = 0) -> dict[str, Any]:
+def run_ephemeral_smoke(
+    episodes: int = 4,
+    seed_start: int = 0,
+    trackio_space_id: str = "",
+    trackio_project: str = "CyberSecurity_OWASP-smoke",
+) -> dict[str, Any]:
     from CyberSecurity_OWASP.models import CyberSecurityOWASPAction
     from CyberSecurity_OWASP.server.CyberSecurity_OWASP_environment import (
         CybersecurityOwaspEnvironment,
     )
     from training.rollout import rollout_once
+    from training.trackio_utils import log_trackio_metrics, trackio_run
 
     baseline = []
     oracle = []
@@ -128,8 +134,9 @@ def run_ephemeral_smoke(episodes: int = 4, seed_start: int = 0) -> dict[str, Any
     def mean(items: list[dict[str, Any]], key: str) -> float:
         return sum(float(item.get(key, 0.0)) for item in items) / max(1, len(items))
 
-    return {
-        "run_name": f"{APP_NAME}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
+    run_name = f"{APP_NAME}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+    result = {
+        "run_name": run_name,
         "mode": "smoke",
         "episodes": episodes,
         "seed_start": seed_start,
@@ -139,6 +146,28 @@ def run_ephemeral_smoke(episodes: int = 4, seed_start: int = 0) -> dict[str, Any
         "baseline": baseline,
         "oracle": oracle,
     }
+    with trackio_run(
+        run_name=run_name,
+        run_type="modal_ephemeral_smoke",
+        project=trackio_project,
+        space_id=trackio_space_id,
+        config={
+            "episodes": episodes,
+            "seed_start": seed_start,
+            "mode": "smoke",
+        },
+        group="smoke",
+    ):
+        log_trackio_metrics(
+            {
+                "smoke/baseline_mean_reward": result["baseline_mean_reward"],
+                "smoke/oracle_mean_reward": result["oracle_mean_reward"],
+                "smoke/oracle_success_rate": result["oracle_success_rate"],
+                "smoke/episodes": episodes,
+            },
+            step=0,
+        )
+    return result
 
 
 @app.function(image=image, timeout=60 * 10)
@@ -149,9 +178,20 @@ def run_grpo_config_check() -> str:
 
 
 @app.local_entrypoint()
-def main(mode: str = "smoke", episodes: int = 4, seed_start: int = 0) -> None:
+def main(
+    mode: str = "smoke",
+    episodes: int = 4,
+    seed_start: int = 0,
+    trackio_space_id: str = "",
+    trackio_project: str = "CyberSecurity_OWASP-smoke",
+) -> None:
     if mode == "smoke":
-        result = run_ephemeral_smoke.remote(episodes=episodes, seed_start=seed_start)
+        result = run_ephemeral_smoke.remote(
+            episodes=episodes,
+            seed_start=seed_start,
+            trackio_space_id=trackio_space_id,
+            trackio_project=trackio_project,
+        )
         output_dir = PROJECT_ROOT / "outputs" / "rollouts"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / f"{result['run_name']}.json"

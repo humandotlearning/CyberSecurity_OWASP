@@ -9,16 +9,26 @@ from __future__ import annotations
 
 import os
 
+from training.trackio_utils import build_run_name, get_git_sha
+
 
 def build_grpo_config():
     from trl import GRPOConfig
 
+    model_name = os.getenv("MODEL_NAME", "Qwen/Qwen3-1.7B")
+    difficulty = int(os.getenv("DIFFICULTY", "0"))
     output_dir = os.getenv("OUTPUT_DIR", "CyberSecurity_OWASP-qwen3-1.7b-grpo")
     trackio_space_id = os.getenv("TRACKIO_SPACE_ID", output_dir)
+    os.environ.setdefault("TRACKIO_PROJECT", "CyberSecurity_OWASP-grpo")
+    run_name = os.getenv(
+        "RUN_NAME",
+        build_run_name(model_name, "grpo", difficulty, git_sha=get_git_sha()),
+    )
     return GRPOConfig(
         output_dir=output_dir,
         report_to="trackio",
         trackio_space_id=trackio_space_id,
+        run_name=run_name,
         logging_steps=1,
         save_steps=25,
         learning_rate=5e-6,

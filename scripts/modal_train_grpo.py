@@ -32,6 +32,8 @@ SECRET_NAME = "CyberSecurity_OWASP-secrets"
 RUNS_DIR = pathlib.Path("/runs")
 REMOTE_PROJECT = "/root/CyberSecurity_OWASP"
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
+PUBLIC_REPO_URL = "https://github.com/humandotlearning/CyberSecurity_OWASP.git"
+PUBLIC_REPO_BRANCH = "master"
 
 
 def _load_local_env_file() -> None:
@@ -44,7 +46,7 @@ def _load_local_env_file() -> None:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        if key not in {"TRACKIO_SPACE_ID", "TRACKIO_PROJECT"}:
+        if key not in {"TRACKIO_PROJECT"}:
             continue
         value = value.strip().strip('"').strip("'")
         os.environ.setdefault(key, value)
@@ -69,8 +71,23 @@ def _is_config_mode() -> bool:
 _load_local_env_file()
 
 
+def _cli_arg_value(name: str, default: str = "") -> str:
+    args = sys.argv[1:]
+    flag = f"--{name}"
+    for index, arg in enumerate(args):
+        if arg == flag and index + 1 < len(args):
+            return args[index + 1]
+        if arg.startswith(f"{flag}="):
+            return arg.split("=", 1)[1]
+    return default
+
+
+def _source_mode() -> str:
+    return _cli_arg_value("source-mode", os.environ.get("MODAL_SOURCE_MODE", "local"))
+
+
 def _training_image() -> modal.Image:
-    return (
+    image = (
         modal.Image.from_registry(
             "nvidia/cuda:12.8.0-devel-ubuntu22.04",
             add_python="3.11",
@@ -85,21 +102,33 @@ def _training_image() -> modal.Image:
             "datasets",
             "huggingface_hub",
             "peft",
+            "pillow",
             "tokenizers",
             "nvidia-ml-py",
             "trackio>=0.25.0",
             "transformers>=5.5.0",
             "trl>=0.28.0",
             "openenv-core[core]>=0.2.3",
-            "pydantic>=2.11.7,<3",
         )
         .uv_pip_install(
             "unsloth_zoo[base] @ git+https://github.com/unslothai/unsloth-zoo",
             "unsloth[base] @ git+https://github.com/unslothai/unsloth",
         )
+        .uv_pip_install("pydantic==2.10.6")
         .uv_pip_install("mergekit", "immutables==0.21", extra_options="--no-deps")
+        .uv_pip_install("llm-blender", "weave")
         .uv_pip_install("trl>=0.28.0", "transformers>=5.5.0", "jmespath")
-        .add_local_dir(
+    )
+
+    if _source_mode() == "public":
+        repo_url = _cli_arg_value("repo-url", PUBLIC_REPO_URL)
+        repo_branch = _cli_arg_value("repo-branch", PUBLIC_REPO_BRANCH)
+        image = image.run_commands(
+            f"git clone --depth 1 --branch {repo_branch} {repo_url} {REMOTE_PROJECT}",
+            f"python -m pip install -e {REMOTE_PROJECT}",
+        )
+    else:
+        image = image.add_local_dir(
             PROJECT_ROOT,
             remote_path=REMOTE_PROJECT,
             copy=True,
@@ -112,17 +141,18 @@ def _training_image() -> modal.Image:
                 "*.pyc",
             ],
         )
-        .run_commands(
+        image = image.run_commands(
             f"python -m pip install -e {REMOTE_PROJECT}",
-            "python -c \"import os, torch; import transformers.utils.hub as hub; "
-            "hub.TRANSFORMERS_CACHE = getattr(hub, 'TRANSFORMERS_CACHE', "
-            "os.path.join(os.path.expanduser('~'), '.cache', 'huggingface', 'hub')); "
-            "from trl import GRPOConfig, GRPOTrainer; "
-            "from CyberSecurity_OWASP.server.CyberSecurity_OWASP_environment import "
-            "CybersecurityOwaspEnvironment; print('trainer import ok', torch.__version__)\"",
         )
-        .workdir(REMOTE_PROJECT)
-    )
+
+    return image.run_commands(
+        "python -c \"import os, torch; import transformers.utils.hub as hub; "
+        "hub.TRANSFORMERS_CACHE = getattr(hub, 'TRANSFORMERS_CACHE', "
+        "os.path.join(os.path.expanduser('~'), '.cache', 'huggingface', 'hub')); "
+        "from trl import GRPOConfig, GRPOTrainer; "
+        "from CyberSecurity_OWASP.server.CyberSecurity_OWASP_environment import "
+        "CybersecurityOwaspEnvironment; print('trainer import ok', torch.__version__)\"",
+    ).workdir(REMOTE_PROJECT)
 
 
 app = modal.App(APP_NAME)
@@ -186,16 +216,21 @@ def train_cybersecurity_owasp_grpo(
     seed_start: int = 0,
     git_sha: str = "nogit",
     run_name: str = "",
+    source_mode: str = "local",
+    repo_url: str = PUBLIC_REPO_URL,
+    repo_branch: str = PUBLIC_REPO_BRANCH,
 ) -> dict[str, str | int | float]:
+    import inspect
     import statistics
 
     import torch
+    from unsloth import FastLanguageModel
     import transformers.utils.hub as transformers_hub
     from datasets import Dataset
     from huggingface_hub import whoami
     from transformers import TrainerCallback
-    from trl import GRPOConfig, GRPOTrainer
-    from unsloth import FastLanguageModel
+    from trl import GRPOConfig, GRPOTrainer, clone_chat_template
+    from trl.chat_template_utils import add_response_schema
 
     import trackio
 
@@ -363,11 +398,27 @@ def train_cybersecurity_owasp_grpo(
             return self._step("read_openapi")
 
         def read_file(self, path: str) -> str:
-            """Read an editable generated workspace file by relative path."""
+            """
+            Read an editable generated workspace file by relative path.
+
+            Args:
+                path: Relative path inside the generated editable workspace.
+
+            Returns:
+                The file contents or a safe tool error observation.
+            """
             return self._step("read_file", {"path": path})
 
         def search_code(self, query: str) -> str:
-            """Search editable generated workspace files for a string."""
+            """
+            Search editable generated workspace files for a string.
+
+            Args:
+                query: Search text to find in editable generated app files.
+
+            Returns:
+                Matching file lines or a no-match message.
+            """
             return self._step("search_code", {"query": query})
 
         def send_local_request(
@@ -376,7 +427,17 @@ def train_cybersecurity_owasp_grpo(
             method: str = "GET",
             user_id: str | None = None,
         ) -> str:
-            """Send a request to the generated local app only."""
+            """
+            Send a request to the generated local app only.
+
+            Args:
+                path: Local route path such as /health or /invoices/<id>.
+                method: HTTP method to use for the local request.
+                user_id: Optional generated user identifier for authentication.
+
+            Returns:
+                JSON response from the simulated local app request.
+            """
             return self._step(
                 "send_local_request",
                 {"path": path, "method": method, "user_id": user_id},
@@ -389,7 +450,18 @@ def train_cybersecurity_owasp_grpo(
             second_user_id: str,
             method: str = "GET",
         ) -> str:
-            """Compare one local request as two generated users."""
+            """
+            Compare one local request as two generated users.
+
+            Args:
+                path: Local route path to request as both generated users.
+                first_user_id: First generated user identifier.
+                second_user_id: Second generated user identifier.
+                method: HTTP method to use for both local requests.
+
+            Returns:
+                JSON summary of both simulated local responses.
+            """
             return self._step(
                 "compare_identities",
                 {
@@ -406,7 +478,17 @@ def train_cybersecurity_owasp_grpo(
             evidence: str,
             policy_rule: str,
         ) -> str:
-            """Submit structured evidence for the suspected authorization bug."""
+            """
+            Submit structured evidence for the suspected authorization bug.
+
+            Args:
+                summary: Concise description of the suspected access-control bug.
+                evidence: Local reproduction evidence from policy, code, or requests.
+                policy_rule: Policy rule that the observed behavior violates.
+
+            Returns:
+                Finding acceptance result and next phase information.
+            """
             return self._step(
                 "submit_finding",
                 {
@@ -422,7 +504,17 @@ def train_cybersecurity_owasp_grpo(
             content: str | None = None,
             diff: str | None = None,
         ) -> str:
-            """Patch an editable generated app file with full content or a unified diff."""
+            """
+            Patch an editable generated app file with full content or a unified diff.
+
+            Args:
+                path: Relative path of the editable generated app file to patch.
+                content: Complete replacement file content, when using full-file patching.
+                diff: Unified diff to apply, when using diff patching.
+
+            Returns:
+                Patch application result.
+            """
             args: dict[str, Any] = {"path": path}
             if content is not None:
                 args["content"] = content
@@ -573,7 +665,10 @@ def train_cybersecurity_owasp_grpo(
             return control
 
     print(f"CUDA available: {torch.cuda.is_available()}")
-    print(f"Packaged local CyberSecurity_OWASP repo; default env repo id: {env_repo_id}")
+    if source_mode == "public":
+        print(f"Installed CyberSecurity_OWASP from public repo: {repo_url}@{repo_branch}")
+    else:
+        print(f"Packaged local CyberSecurity_OWASP repo; default env repo id: {env_repo_id}")
     print(f"Trackio Space: {trackio_space_id}")
     print(f"Trackio Project: {trackio_project}")
     print(f"Output repo: {output_repo_id}")
@@ -586,6 +681,18 @@ def train_cybersecurity_owasp_grpo(
         fast_inference=False,
         token=hf_token,
     )
+    try:
+        tokenizer = add_response_schema(tokenizer)
+    except Exception as exc:
+        print(f"Tokenizer response schema add failed before cloning: {exc!r}")
+        model, tokenizer, added_tokens = clone_chat_template(
+            model,
+            tokenizer,
+            "Qwen/Qwen3-0.6B",
+        )
+        print(f"Cloned Qwen3 chat template; added {len(added_tokens)} tokens.")
+        tokenizer = add_response_schema(tokenizer)
+
     model = FastLanguageModel.get_peft_model(
         model,
         r=lora_rank,
@@ -604,46 +711,68 @@ def train_cybersecurity_owasp_grpo(
     )
     FastLanguageModel.for_training(model)
 
+    grpo_config_values = {
+        "temperature": 1.0,
+        "learning_rate": 5e-6,
+        "weight_decay": 0.001,
+        "warmup_ratio": 0.1,
+        "lr_scheduler_type": "linear",
+        "optim": "adamw_8bit",
+        "logging_steps": 1,
+        "per_device_train_batch_size": 1,
+        "gradient_accumulation_steps": max(2, num_generations),
+        "num_generations": num_generations,
+        "max_prompt_length": max_seq_length,
+        "max_completion_length": max_completion_length,
+        "max_steps": max_steps,
+        "save_steps": max(10, max_steps),
+        "report_to": "trackio",
+        "trackio_space_id": trackio_space_id,
+        "run_name": run_name,
+        "output_dir": str(output_dir),
+        "push_to_hub": True,
+        "hub_model_id": output_repo_id,
+        "hub_private_repo": True,
+        "hub_strategy": "every_save",
+        "gradient_checkpointing": True,
+        "gradient_checkpointing_kwargs": {"use_reentrant": False},
+        "epsilon": 0.2,
+        "epsilon_high": 0.28,
+        "delta": 1.5,
+        "loss_type": "bnpo",
+        "mask_truncated_completions": False,
+    }
+    grpo_config_parameters = set(inspect.signature(GRPOConfig).parameters)
+    skipped_config_keys = sorted(set(grpo_config_values) - grpo_config_parameters)
+    if skipped_config_keys:
+        print(f"Skipping unsupported GRPOConfig keys: {skipped_config_keys}")
     training_args = GRPOConfig(
-        temperature=1.0,
-        learning_rate=5e-6,
-        weight_decay=0.001,
-        warmup_ratio=0.1,
-        lr_scheduler_type="linear",
-        optim="adamw_8bit",
-        logging_steps=1,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=max(2, num_generations),
-        num_generations=num_generations,
-        max_prompt_length=max_seq_length,
-        max_completion_length=max_completion_length,
-        max_steps=max_steps,
-        save_steps=max(10, max_steps),
-        report_to="trackio",
-        trackio_space_id=trackio_space_id,
-        run_name=run_name,
-        output_dir=str(output_dir),
-        push_to_hub=True,
-        hub_model_id=output_repo_id,
-        hub_private_repo=True,
-        hub_strategy="every_save",
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
-        epsilon=0.2,
-        epsilon_high=0.28,
-        delta=1.5,
-        loss_type="bnpo",
-        mask_truncated_completions=False,
+        **{
+            key: value
+            for key, value in grpo_config_values.items()
+            if key in grpo_config_parameters
+        }
     )
 
+    trainer_values = {
+        "model": model,
+        "processing_class": tokenizer,
+        "reward_funcs": cybersecurity_owasp_reward,
+        "args": training_args,
+        "train_dataset": dataset,
+        "environment_factory": CyberSecurityOWASPToolEnv,
+        "callbacks": [TrackioSystemMetricsCallback()],
+    }
+    trainer_parameters = set(inspect.signature(GRPOTrainer).parameters)
+    skipped_trainer_keys = sorted(set(trainer_values) - trainer_parameters)
+    if skipped_trainer_keys:
+        print(f"Skipping unsupported GRPOTrainer keys: {skipped_trainer_keys}")
     trainer = GRPOTrainer(
-        model=model,
-        processing_class=tokenizer,
-        reward_funcs=cybersecurity_owasp_reward,
-        args=training_args,
-        train_dataset=dataset,
-        environment_factory=CyberSecurityOWASPToolEnv,
-        callbacks=[TrackioSystemMetricsCallback()],
+        **{
+            key: value
+            for key, value in trainer_values.items()
+            if key in trainer_parameters
+        }
     )
     trainer.train()
     trainer.push_to_hub()
@@ -662,6 +791,9 @@ def train_cybersecurity_owasp_grpo(
         "model_name": model_name,
         "max_completion_length": max_completion_length,
         "num_generations": num_generations,
+        "source_mode": source_mode,
+        "repo_url": repo_url,
+        "repo_branch": repo_branch,
     }
 
 
@@ -683,6 +815,10 @@ def main(
     num_generations: int = 2,
     seed_start: int = 0,
     git_sha: str = "nogit",
+    source_mode: str = "local",
+    repo_url: str = PUBLIC_REPO_URL,
+    repo_branch: str = PUBLIC_REPO_BRANCH,
+    detach: bool = False,
 ) -> None:
     if mode == "config":
         result = check_training_imports.remote()
@@ -732,7 +868,23 @@ def main(
         f"{local_stamp}-{git_sha[:8]}"
     )
 
-    call = train_cybersecurity_owasp_grpo.spawn(
+    print(f"Run name: {run_name}")
+    print(f"Source mode: {source_mode}")
+    if source_mode == "public":
+        print(f"Public repo: {repo_url}@{repo_branch}")
+    if resolved_trackio_space_id:
+        print(f"Trackio Space: https://huggingface.co/spaces/{resolved_trackio_space_id}")
+    else:
+        print("Trackio Space: derived remotely from HF_TOKEN as <hf-user>/CyberSecurity_OWASP-trackio")
+    if resolved_output_repo_id:
+        print(f"Output model repo: https://huggingface.co/{resolved_output_repo_id}")
+    else:
+        print(
+            "Output model repo: derived remotely from HF_TOKEN as "
+            "<hf-user>/CyberSecurity_OWASP-qwen3-1.7b-grpo-lora"
+        )
+
+    kwargs = dict(
         env_repo_id=env_repo_id,
         output_repo_id=output_repo_id,
         max_steps=max_steps,
@@ -749,17 +901,13 @@ def main(
         seed_start=seed_start,
         git_sha=git_sha,
         run_name=run_name,
+        source_mode=source_mode,
+        repo_url=repo_url,
+        repo_branch=repo_branch,
     )
-    print(f"Spawned Modal training call: {call.object_id}")
-    print(f"Run name: {run_name}")
-    if resolved_trackio_space_id:
-        print(f"Trackio Space: https://huggingface.co/spaces/{resolved_trackio_space_id}")
+    if detach:
+        call = train_cybersecurity_owasp_grpo.spawn(**kwargs)
+        print(f"Spawned Modal training call: {call.object_id}")
     else:
-        print("Trackio Space: derived remotely from HF_TOKEN as <hf-user>/CyberSecurity_OWASP-trackio")
-    if resolved_output_repo_id:
-        print(f"Output model repo: https://huggingface.co/{resolved_output_repo_id}")
-    else:
-        print(
-            "Output model repo: derived remotely from HF_TOKEN as "
-            "<hf-user>/CyberSecurity_OWASP-qwen3-1.7b-grpo-lora"
-        )
+        result = train_cybersecurity_owasp_grpo.remote(**kwargs)
+        print(f"Training result: {result}")

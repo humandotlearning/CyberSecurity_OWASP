@@ -133,6 +133,24 @@ Training files are under `training/`:
 
 The training scaffold is intentionally minimal until the environment/verifier behavior is stable. Trackio metric names and GRPO defaults follow the project brief.
 
+## Trackio Run Tracking
+
+Trackio is the default tracker for official runs. Set `TRACKIO_SPACE_ID` to log to a hosted Hugging Face Trackio Space; otherwise Trackio records locally.
+
+```bash
+export TRACKIO_SPACE_ID=<hf-user>/CyberSecurity_OWASP-trackio
+export TRACKIO_PROJECT=CyberSecurity_OWASP-grpo
+```
+
+Use the tracked smoke wrapper instead of invoking pytest directly when producing run artifacts:
+
+```bash
+bash scripts/smoke_test.sh
+uv run python scripts/track_pytest.py tests
+```
+
+Evaluation summaries saved through `training.eval_before_after.save_eval_summary(...)`, Modal smoke runs, and GRPO training configs all initialize Trackio runs with CyberSecurity_OWASP run names.
+
 ## Modal Ephemeral Runs
 
 Modal Labs support is kept in a separate launcher script so the local OpenEnv server and core training scaffold stay unchanged.
@@ -149,7 +167,7 @@ Run a temporary Modal app for a cheap environment/training smoke check:
 uv run --extra modal modal run scripts/modal_ephemeral_train.py --mode smoke --episodes 4
 ```
 
-The app is ephemeral: Modal starts it for the command and stops it when the command exits. The remote result is written locally under `outputs/rollouts/`.
+The app is ephemeral: Modal starts it for the command and stops it when the command exits. The remote result is written locally under `outputs/rollouts/` and the summary metrics are logged to Trackio.
 
 You can also validate the GRPO config construction remotely:
 
@@ -181,6 +199,20 @@ Run the default smoke GRPO job:
 
 ```bash
 uv run --extra modal modal run scripts/modal_train_grpo.py \
+  --max-steps 10 \
+  --dataset-size 16 \
+  --num-generations 2 \
+  --difficulty 0
+```
+
+If running from a public repository and you do not want Modal to package the
+local workspace, use public source mode:
+
+```bash
+uv run --extra modal modal run scripts/modal_train_grpo.py \
+  --source-mode public \
+  --repo-url https://github.com/humandotlearning/CyberSecurity_OWASP.git \
+  --repo-branch master \
   --max-steps 10 \
   --dataset-size 16 \
   --num-generations 2 \

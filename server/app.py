@@ -6,6 +6,13 @@
 
 """FastAPI application for the CyberSecurity_OWASP OpenEnv server."""
 
+import os
+
+# OpenEnv disables the Gradio playground unless this flag is enabled. Default it
+# on so Docker/HF Spaces show the reset/step/state UI, while explicit env values
+# such as ENABLE_WEB_INTERFACE=false still take precedence.
+os.environ.setdefault("ENABLE_WEB_INTERFACE", "true")
+
 try:
     from openenv.core.env_server.http_server import create_app
 except Exception as e:  # pragma: no cover
