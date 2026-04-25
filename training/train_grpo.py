@@ -1,8 +1,8 @@
-"""Minimal GRPO training entrypoint scaffold.
+"""Modal-only GRPO config helper for CyberSecurity_OWASP.
 
-This file intentionally does not start training on import. It validates that the
-required TRL/Trackio configuration can be constructed when optional training
-dependencies are installed.
+This module intentionally does not run local training.
+Use `scripts/modal_train_grpo.py` (persistent) or
+`scripts/modal_ephemeral_train.py` (smoke) for execution.
 """
 
 from __future__ import annotations
@@ -12,13 +12,21 @@ import os
 from training.trackio_utils import build_run_name, get_git_sha
 
 
+DEFAULT_GEMMA_MODEL = os.getenv("MODEL_NAME", "unsloth/gemma-4-E2B-it")
+
+
 def build_grpo_config():
+    """Build the TRL GRPOConfig used by the Modal training pipeline."""
+
     from trl import GRPOConfig
 
-    model_name = os.getenv("MODEL_NAME", "Qwen/Qwen3-1.7B")
+    model_name = os.getenv("MODEL_NAME", DEFAULT_GEMMA_MODEL)
     difficulty = int(os.getenv("DIFFICULTY", "0"))
-    output_dir = os.getenv("OUTPUT_DIR", "CyberSecurity_OWASP-qwen3-1.7b-grpo")
-    trackio_space_id = os.getenv("TRACKIO_SPACE_ID", output_dir)
+    output_dir = os.getenv(
+        "OUTPUT_DIR",
+        f"CyberSecurity_OWASP-{model_name.replace('/', '-')}-grpo",
+    )
+    trackio_space_id = os.getenv("TRACKIO_SPACE_ID", "Humanlearning/CyberSecurity_OWASP-trackio")
     os.environ.setdefault("TRACKIO_PROJECT", "CyberSecurity_OWASP-grpo")
     run_name = os.getenv(
         "RUN_NAME",
@@ -47,9 +55,41 @@ def build_grpo_config():
     )
 
 
-def main():
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "CyberSecurity_OWASP GRPO config helper."
+            " Actual GRPO training is executed on Modal only."
+        )
+    )
+    parser.add_argument(
+        "--difficulty",
+        type=int,
+        default=0,
+        help="Optional curriculum difficulty included in the generated run name.",
+    )
+    parser.add_argument("--model-name", default=DEFAULT_GEMMA_MODEL)
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Optional GRPO output_dir override.",
+    )
+    args = parser.parse_args()
+
+    os.environ["MODEL_NAME"] = args.model_name
+    if args.output_dir:
+        os.environ["OUTPUT_DIR"] = args.output_dir
+
     config = build_grpo_config()
+    print("GRPO config (Modal execution):")
     print(config)
+    print(
+        "Run on Modal, for example:\n"
+        "uv run --extra modal modal run scripts/modal_train_grpo.py "
+        f"--model-name {args.model_name} --difficulty {args.difficulty}"
+    )
 
 
 if __name__ == "__main__":

@@ -28,12 +28,61 @@ import modal
 
 APP_NAME = "CyberSecurity_OWASP-grpo"
 VOLUME_NAME = "CyberSecurity_OWASP-grpo-runs"
+CACHE_VOLUME_NAME = "CyberSecurity_OWASP-model-cache"
 SECRET_NAME = "CyberSecurity_OWASP-secrets"
 RUNS_DIR = pathlib.Path("/runs")
+CACHE_DIR = pathlib.Path("/cache")
+HF_HOME_DIR = CACHE_DIR / "huggingface"
+HF_HUB_CACHE_DIR = HF_HOME_DIR / "hub"
+TORCH_HOME_DIR = CACHE_DIR / "torch"
+XDG_CACHE_DIR = CACHE_DIR / "xdg"
+UNSLOTH_CACHE_DIR = CACHE_DIR / "unsloth"
+TRITON_CACHE_DIR = CACHE_DIR / "triton"
 REMOTE_PROJECT = "/root/CyberSecurity_OWASP"
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 PUBLIC_REPO_URL = "https://github.com/humandotlearning/CyberSecurity_OWASP.git"
 PUBLIC_REPO_BRANCH = "master"
+DEFAULT_GEMMA_MODEL = "unsloth/gemma-4-E2B-it"
+
+
+def _model_repo_slug(model_name: str) -> str:
+    return (
+        model_name.replace("/", "-")
+        .replace("_", "-")
+        .replace(".", "-")
+        .lower()
+    )
+
+
+def _hf_model_cache_path(model_name: str) -> pathlib.Path:
+    return HF_HUB_CACHE_DIR / f"models--{model_name.replace('/', '--')}"
+
+
+def _configure_modal_cache_env() -> dict[str, str]:
+    values = {
+        "HF_HOME": str(HF_HOME_DIR),
+        "HF_HUB_CACHE": str(HF_HUB_CACHE_DIR),
+        "TRANSFORMERS_CACHE": str(HF_HUB_CACHE_DIR),
+        "TORCH_HOME": str(TORCH_HOME_DIR),
+        "XDG_CACHE_HOME": str(XDG_CACHE_DIR),
+        "UNSLOTH_CACHE_DIR": str(UNSLOTH_CACHE_DIR),
+        "UNSLOTH_COMPILE_CACHE": str(UNSLOTH_CACHE_DIR / "compile"),
+        "TRITON_CACHE_DIR": str(TRITON_CACHE_DIR),
+    }
+    for key, value in values.items():
+        os.environ[key] = value
+    for path in {
+        CACHE_DIR,
+        HF_HOME_DIR,
+        HF_HUB_CACHE_DIR,
+        TORCH_HOME_DIR,
+        XDG_CACHE_DIR,
+        UNSLOTH_CACHE_DIR,
+        UNSLOTH_CACHE_DIR / "compile",
+        TRITON_CACHE_DIR,
+    }:
+        path.mkdir(parents=True, exist_ok=True)
+    return values
 
 
 def _load_local_env_file() -> None:
@@ -114,6 +163,7 @@ def _training_image() -> modal.Image:
             "unsloth_zoo[base] @ git+https://github.com/unslothai/unsloth-zoo",
             "unsloth[base] @ git+https://github.com/unslothai/unsloth",
         )
+        .uv_pip_install("timm", extra_options="--no-deps")
         .uv_pip_install("pydantic==2.10.6")
         .uv_pip_install("mergekit", "immutables==0.21", extra_options="--no-deps")
         .uv_pip_install("llm-blender", "weave")
@@ -159,22 +209,25 @@ def _training_image() -> modal.Image:
 
 app = modal.App(APP_NAME)
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+cache_volume = modal.Volume.from_name(CACHE_VOLUME_NAME, create_if_missing=True)
 secrets = _modal_secrets()
 
 
 @app.function(
     image=_training_image(),
-    gpu=["L4", "A10G"],
+    gpu="L4",
     timeout=4 * 60 * 60,
-    volumes={RUNS_DIR: volume},
+    volumes={RUNS_DIR: volume, CACHE_DIR: cache_volume},
     secrets=secrets,
 )
 def check_training_imports() -> dict[str, str]:
+    cache_env = _configure_modal_cache_env()
+
     import torch
     import trackio
     from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer
-    from unsloth import FastLanguageModel
+    from unsloth import FastLanguageModel, FastVisionModel
 
     from CyberSecurity_OWASP.server.CyberSecurity_OWASP_environment import (
         CybersecurityOwaspEnvironment,
@@ -189,16 +242,19 @@ def check_training_imports() -> dict[str, str]:
         "grpo_config": GRPOConfig.__name__,
         "grpo_trainer": GRPOTrainer.__name__,
         "unsloth_model": FastLanguageModel.__name__,
+        "unsloth_vision_model": FastVisionModel.__name__,
         "env": CybersecurityOwaspEnvironment.__name__,
         "reset_phase": obs.phase,
+        "hf_home": cache_env["HF_HOME"],
+        "hf_hub_cache": cache_env["HF_HUB_CACHE"],
     }
 
 
 @app.function(
     image=_training_image(),
-    gpu=["L4", "A10G"],
+    gpu="L4",
     timeout=4 * 60 * 60,
-    volumes={RUNS_DIR: volume},
+    volumes={RUNS_DIR: volume, CACHE_DIR: cache_volume},
     secrets=secrets,
 )
 def train_cybersecurity_owasp_grpo(
@@ -208,11 +264,11 @@ def train_cybersecurity_owasp_grpo(
     dataset_size: int = 16,
     difficulty: int = 0,
     split: str = "train",
-    model_name: str = "Qwen/Qwen3-1.7B",
+    model_name: str = DEFAULT_GEMMA_MODEL,
     max_seq_length: int = 4096,
     max_completion_length: int = 768,
     lora_rank: int = 32,
-    trackio_space_id: str = "",
+    trackio_space_id: str = "Humanlearning/CyberSecurity_OWASP-trackio",
     trackio_project: str = "CyberSecurity_OWASP-grpo",
     num_generations: int = 2,
     seed_start: int = 0,
@@ -221,15 +277,18 @@ def train_cybersecurity_owasp_grpo(
     source_mode: str = "local",
     repo_url: str = PUBLIC_REPO_URL,
     repo_branch: str = PUBLIC_REPO_BRANCH,
+    push_to_hub: bool = False,
 ) -> dict[str, str | int | float]:
     import inspect
     import statistics
 
+    cache_env = _configure_modal_cache_env()
+
     import torch
-    from unsloth import FastLanguageModel
+    from unsloth import FastLanguageModel, FastVisionModel
     import transformers.utils.hub as transformers_hub
     from datasets import Dataset
-    from huggingface_hub import whoami
+    from huggingface_hub import snapshot_download, whoami
     from transformers import TrainerCallback
     from trl import GRPOConfig, GRPOTrainer, clone_chat_template
     from trl.chat_template_utils import add_response_schema
@@ -240,14 +299,16 @@ def train_cybersecurity_owasp_grpo(
     from CyberSecurity_OWASP.server.CyberSecurity_OWASP_environment import (
         CybersecurityOwaspEnvironment,
     )
+    from training.trackio_utils import (
+        aggregate_episode_metrics,
+        episode_record_from_state,
+        log_gpu_metrics,
+        log_trace_table,
+        log_trackio_metrics,
+        train_metric_aliases,
+    )
 
-    if not hasattr(transformers_hub, "TRANSFORMERS_CACHE"):
-        transformers_hub.TRANSFORMERS_CACHE = os.path.join(
-            os.path.expanduser("~"),
-            ".cache",
-            "huggingface",
-            "hub",
-        )
+    transformers_hub.TRANSFORMERS_CACHE = cache_env["HF_HUB_CACHE"]
 
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token:
@@ -257,8 +318,20 @@ def train_cybersecurity_owasp_grpo(
 
     user = whoami(token=hf_token)["name"]
     env_repo_id = env_repo_id or f"{user}/CyberSecurity_OWASP"
-    output_repo_id = output_repo_id or f"{user}/CyberSecurity_OWASP-qwen3-1.7b-grpo-lora"
-    trackio_space_id = trackio_space_id or f"{user}/CyberSecurity_OWASP-trackio"
+    output_repo_id = output_repo_id or (
+        f"{user}/CyberSecurity_OWASP-{_model_repo_slug(model_name)}-grpo-lora"
+    )
+    if not trackio_space_id:
+        trackio_space_id = "Humanlearning/CyberSecurity_OWASP-trackio"
+        if hf_token:
+            try:
+                from huggingface_hub import whoami
+
+                user = whoami(token=hf_token)["name"]
+                if user == "humandotlearning":
+                    trackio_space_id = f"{user}/CyberSecurity_OWASP-trackio"
+            except Exception:
+                pass
 
     os.environ["TRACKIO_SPACE_ID"] = trackio_space_id
     os.environ["TRACKIO_PROJECT"] = trackio_project
@@ -270,6 +343,13 @@ def train_cybersecurity_owasp_grpo(
     )
     output_dir = RUNS_DIR / run_name
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        cache_volume.reload()
+        print(f"Reloaded Modal model cache volume: {CACHE_VOLUME_NAME}")
+    except Exception as exc:
+        print(f"Model cache volume reload skipped: {exc!r}")
+    cache_env = _configure_modal_cache_env()
 
     training_prompt = (
         "You are a defensive AppSec repair agent in the local CyberSecurity_OWASP "
@@ -570,48 +650,47 @@ def train_cybersecurity_owasp_grpo(
         completions = kwargs.get("completions") or kwargs.get("completion") or []
         trace_step["value"] += 1
 
-        breakdowns = [getattr(env, "reward_breakdown", {}) or {} for env in environments]
+        episode_records = []
+        for env, reward in zip(environments, rewards):
+            record = episode_record_from_state(
+                env._env.state,
+                run_context={
+                    "base_model": model_name,
+                    "algo": "grpo",
+                    "reward_version": "reward_v1",
+                    "env_version": "0.1.0",
+                },
+            )
+            record.update(
+                {
+                    "reward_total": reward,
+                    "success": bool(getattr(env, "success", False)),
+                }
+            )
+            episode_records.append(record)
+
+        canonical_metrics = aggregate_episode_metrics(episode_records)
         metrics = {
-            "train/reward_total_mean": _mean(rewards),
-            "train/reward_discovery_mean": _mean(
-                [float(item.get("discovery", 0.0)) for item in breakdowns]
-            ),
-            "train/reward_security_mean": _mean(
-                [float(item.get("security", 0.0)) for item in breakdowns]
-            ),
-            "train/reward_regression_mean": _mean(
-                [float(item.get("regression", 0.0)) for item in breakdowns]
-            ),
-            "train/reward_public_routes_mean": _mean(
-                [float(item.get("public_routes", 0.0)) for item in breakdowns]
-            ),
-            "train/reward_patch_quality_mean": _mean(
-                [float(item.get("patch_quality", 0.0)) for item in breakdowns]
-            ),
-            "train/reward_visible_tests_mean": _mean(
-                [float(item.get("visible_tests", 0.0)) for item in breakdowns]
-            ),
-            "train/reward_anti_cheat_mean": _mean(
-                [float(item.get("anti_cheat", 0.0)) for item in breakdowns]
-            ),
-            "train/success_rate": _mean(
-                [1.0 if bool(getattr(env, "success", False)) else 0.0 for env in environments]
-            ),
-            "train/invalid_action_rate": _mean(
-                [float(getattr(env, "invalid_actions", 0)) for env in environments]
-            ),
-            "train/episode_length_mean": _mean(
-                [
-                    float(getattr(env, "trace_metadata", {}).get("step_count", 0))
-                    for env in environments
-                ]
-            ),
+            **canonical_metrics,
+            **train_metric_aliases(canonical_metrics),
         }
+        if rewards:
+            metrics["train/reward_mean"] = _mean(rewards)
+            metrics["train/reward_std"] = statistics.pstdev(rewards) if len(rewards) > 1 else 0.0
 
         try:
-            trackio.log(metrics, step=trace_step["value"])
+            log_trackio_metrics(metrics, step=trace_step["value"])
         except Exception as exc:
             print(f"Trackio metric logging skipped: {exc!r}")
+
+        try:
+            log_trace_table(
+                episode_records[: min(4, len(episode_records))],
+                table_name="sample_traces",
+                step=trace_step["value"],
+            )
+        except Exception as exc:
+            print(f"Trackio sample trace table logging skipped: {exc!r}")
 
         for index, env in enumerate(environments):
             messages = list(getattr(env, "trace_messages", []))
@@ -655,15 +734,37 @@ def train_cybersecurity_owasp_grpo(
         return rewards
 
     class TrackioSystemMetricsCallback(TrainerCallback):
+        def on_train_begin(self, args, state, control, **kwargs):
+            try:
+                metrics = log_gpu_metrics(step=int(state.global_step or 0))
+            except Exception as exc:
+                print(f"Trackio GPU metrics initialization skipped: {exc!r}")
+                return control
+            if metrics:
+                system_summary = ", ".join(
+                    f"{key}={value}"
+                    for key, value in sorted(metrics.items())
+                    if key.startswith("system/")
+                )
+                print(f"Trackio GPU metrics initialized: {system_summary}")
+            return control
+
         def on_log(self, args, state, control, logs=None, **kwargs):
             try:
-                metrics = trackio.log_gpu()
+                metrics = log_gpu_metrics(step=int(state.global_step or 0))
             except Exception as exc:
                 print(f"Trackio GPU metrics skipped: {exc!r}")
                 return control
             if metrics:
                 summary = ", ".join(f"{key}={value}" for key, value in sorted(metrics.items())[:4])
                 print(f"Trackio GPU metrics logged at step {state.global_step}: {summary}")
+            return control
+
+        def on_train_end(self, args, state, control, **kwargs):
+            try:
+                log_gpu_metrics(step=int(state.global_step or 0))
+            except Exception as exc:
+                print(f"Trackio final GPU metrics skipped: {exc!r}")
             return control
 
     print(f"CUDA available: {torch.cuda.is_available()}")
@@ -675,27 +776,114 @@ def train_cybersecurity_owasp_grpo(
     print(f"Trackio Project: {trackio_project}")
     print(f"Output repo: {output_repo_id}")
     print(f"Run name: {run_name}")
+    print(f"Model cache volume: {CACHE_VOLUME_NAME}")
+    print(f"HF_HOME: {cache_env['HF_HOME']}")
+    print(f"HF_HUB_CACHE: {cache_env['HF_HUB_CACHE']}")
+    print(f"Torch cache: {cache_env['TORCH_HOME']}")
+    print(f"Unsloth cache: {cache_env['UNSLOTH_CACHE_DIR']}")
+    print(f"Triton cache: {cache_env['TRITON_CACHE_DIR']}")
+    print(f"Hub push enabled: {push_to_hub}")
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
+    trackio.init(
+        project=trackio_project,
+        name=run_name,
+        group="grpo",
+        space_id=trackio_space_id,
+        auto_log_gpu=True,
+        gpu_log_interval=10.0,
+        config={
+            "environment": "CyberSecurity_OWASP",
+            "run_type": "modal_grpo",
+            "model_name": model_name,
+            "difficulty": difficulty,
+            "split": split,
+            "dataset_size": dataset_size,
+            "max_steps": max_steps,
+            "num_generations": num_generations,
+            "max_seq_length": max_seq_length,
+            "max_completion_length": max_completion_length,
+            "lora_rank": lora_rank,
+            "gpu_requested": "L4",
+            "load_in_4bit": False,
+            "fast_inference": False,
+            "gradient_checkpointing": "unsloth",
+            "optim": "adamw_8bit",
+        },
+    )
+    log_gpu_metrics(step=0)
+
+    expected_model_cache = _hf_model_cache_path(model_name)
+    cache_hit = expected_model_cache.exists()
+    print(f"Expected HF model cache path: {expected_model_cache}")
+    print(f"Model cache hit before load: {cache_hit}")
+    if cache_hit:
+        print("Using cached model snapshot from the persistent Modal volume when valid.")
+    else:
+        print(
+            "Model cache miss. Downloading model weights once into the persistent "
+            "Modal cache volume; Hugging Face progress output should follow."
+        )
+    try:
+        snapshot_path = snapshot_download(
+            repo_id=model_name,
+            cache_dir=str(HF_HUB_CACHE_DIR),
+            token=hf_token,
+        )
+        print(f"Model snapshot ready: {snapshot_path}")
+        cache_volume.commit()
+        print(f"Committed Modal model cache volume after snapshot download: {CACHE_VOLUME_NAME}")
+    except Exception as exc:
+        print(
+            "Explicit model snapshot prefetch failed; Unsloth will attempt the "
+            f"model load directly. Error: {exc!r}"
+        )
+
+    print(f"Loading model with Unsloth from_pretrained: {model_name}")
+    model_api = FastVisionModel if "gemma-4" in model_name.lower() else FastLanguageModel
+    model, tokenizer = model_api.from_pretrained(
         model_name=model_name,
         max_seq_length=max_seq_length,
         load_in_4bit=False,
         fast_inference=False,
+        cache_dir=str(HF_HUB_CACHE_DIR),
         token=hf_token,
     )
+    print("Model load complete.")
+    cache_volume.commit()
+    print(f"Committed Modal model cache volume after model load: {CACHE_VOLUME_NAME}")
     try:
         tokenizer = add_response_schema(tokenizer)
     except Exception as exc:
-        print(f"Tokenizer response schema add failed before cloning: {exc!r}")
-        model, tokenizer, added_tokens = clone_chat_template(
-            model,
-            tokenizer,
-            "Qwen/Qwen3-0.6B",
-        )
-        print(f"Cloned Qwen3 chat template; added {len(added_tokens)} tokens.")
-        tokenizer = add_response_schema(tokenizer)
+        if "gemma-4" in model_name.lower():
+            print(
+                "Tokenizer response schema add skipped for Gemma 4 processor, "
+                "matching the Unsloth Gemma 4 GRPO notebook pattern: "
+                f"{exc!r}"
+            )
+        else:
+            print(f"Tokenizer response schema add failed before cloning: {exc!r}")
+            for template_source in ("Qwen/Qwen3-0.6B", "Qwen/Qwen2.5-0.5B-Instruct"):
+                try:
+                    model, tokenizer, added_tokens = clone_chat_template(
+                        model,
+                        tokenizer,
+                        template_source,
+                    )
+                    print(
+                        "Cloned response-schema-capable chat template "
+                        f"from {template_source}; added {len(added_tokens)} tokens."
+                    )
+                    tokenizer = add_response_schema(tokenizer)
+                    break
+                except Exception as clone_exc:
+                    print(
+                        "Tokenizer response schema fallback failed for "
+                        f"{template_source}: {clone_exc!r}"
+                    )
+            else:
+                raise
 
-    model = FastLanguageModel.get_peft_model(
+    model = model_api.get_peft_model(
         model,
         r=lora_rank,
         target_modules=[
@@ -711,7 +899,9 @@ def train_cybersecurity_owasp_grpo(
         use_gradient_checkpointing="unsloth",
         random_state=3407,
     )
-    FastLanguageModel.for_training(model)
+    if hasattr(model_api, "for_training"):
+        model_api.for_training(model)
+    print("LoRA adapter attached and model switched to training mode.")
 
     grpo_config_values = {
         "temperature": 1.0,
@@ -732,7 +922,7 @@ def train_cybersecurity_owasp_grpo(
         "trackio_space_id": trackio_space_id,
         "run_name": run_name,
         "output_dir": str(output_dir),
-        "push_to_hub": True,
+        "push_to_hub": push_to_hub,
         "hub_model_id": output_repo_id,
         "hub_private_repo": True,
         "hub_strategy": "every_save",
@@ -742,7 +932,7 @@ def train_cybersecurity_owasp_grpo(
         "epsilon_high": 0.28,
         "delta": 1.5,
         "loss_type": "bnpo",
-        "mask_truncated_completions": False,
+        "mask_truncated_completions": True,
     }
     grpo_config_parameters = set(inspect.signature(GRPOConfig).parameters)
     skipped_config_keys = sorted(set(grpo_config_values) - grpo_config_parameters)
@@ -776,9 +966,23 @@ def train_cybersecurity_owasp_grpo(
             if key in trainer_parameters
         }
     )
+    print("Starting GRPO trainer.train().")
     trainer.train()
-    trainer.push_to_hub()
+    print("GRPO trainer.train() complete.")
+    if push_to_hub:
+        print(f"Pushing LoRA adapter to Hugging Face Hub: {output_repo_id}")
+        trainer.push_to_hub()
+        print("Hub push complete.")
+    else:
+        print("Skipping Hub push for this run. Pass --push-to-hub to upload adapters.")
     volume.commit()
+    cache_volume.commit()
+    print(f"Committed run volume: {VOLUME_NAME}")
+    print(f"Committed model cache volume: {CACHE_VOLUME_NAME}")
+    try:
+        trackio.finish()
+    except RuntimeError as exc:
+        print(f"Trackio finish skipped because the trainer already finalized it: {exc}")
 
     return {
         "run_name": run_name,
@@ -796,6 +1000,7 @@ def train_cybersecurity_owasp_grpo(
         "source_mode": source_mode,
         "repo_url": repo_url,
         "repo_branch": repo_branch,
+        "push_to_hub": push_to_hub,
     }
 
 
@@ -808,11 +1013,11 @@ def main(
     dataset_size: int = 16,
     difficulty: int = 0,
     split: str = "train",
-    model_name: str = "Qwen/Qwen3-1.7B",
+    model_name: str = DEFAULT_GEMMA_MODEL,
     max_seq_length: int = 4096,
     max_completion_length: int = 768,
     lora_rank: int = 32,
-    trackio_space_id: str = "",
+    trackio_space_id: str = "Humanlearning/CyberSecurity_OWASP-trackio",
     trackio_project: str = "CyberSecurity_OWASP-grpo",
     num_generations: int = 2,
     seed_start: int = 0,
@@ -821,6 +1026,7 @@ def main(
     repo_url: str = PUBLIC_REPO_URL,
     repo_branch: str = PUBLIC_REPO_BRANCH,
     detach: bool = False,
+    push_to_hub: bool = False,
 ) -> None:
     if mode == "config":
         result = check_training_imports.remote()
@@ -829,7 +1035,10 @@ def main(
     if mode != "train":
         raise ValueError("mode must be 'train' or 'config'")
 
-    trackio_space_id = trackio_space_id or os.environ.get("TRACKIO_SPACE_ID", "")
+    trackio_space_id = trackio_space_id or os.environ.get(
+        "TRACKIO_SPACE_ID",
+        "Humanlearning/CyberSecurity_OWASP-trackio",
+    )
     trackio_project = trackio_project or os.environ.get(
         "TRACKIO_PROJECT", "CyberSecurity_OWASP-grpo"
     )
@@ -842,12 +1051,15 @@ def main(
                 from huggingface_hub import whoami
 
                 user = whoami(token=hf_token)["name"]
-                resolved_trackio_space_id = (
-                    resolved_trackio_space_id or f"{user}/CyberSecurity_OWASP-trackio"
-                )
+                if not resolved_trackio_space_id:
+                    resolved_trackio_space_id = (
+                        f"{user}/CyberSecurity_OWASP-trackio"
+                        if user == "humandotlearning"
+                        else "Humanlearning/CyberSecurity_OWASP-trackio"
+                    )
                 resolved_output_repo_id = (
                     resolved_output_repo_id
-                    or f"{user}/CyberSecurity_OWASP-qwen3-1.7b-grpo-lora"
+                    or f"{user}/CyberSecurity_OWASP-{_model_repo_slug(model_name)}-grpo-lora"
                 )
             except Exception as exc:
                 print(f"Could not resolve Hugging Face defaults locally: {exc!r}")
@@ -883,8 +1095,10 @@ def main(
     else:
         print(
             "Output model repo: derived remotely from HF_TOKEN as "
-            "<hf-user>/CyberSecurity_OWASP-qwen3-1.7b-grpo-lora"
+            f"<hf-user>/CyberSecurity_OWASP-{_model_repo_slug(model_name)}-grpo-lora"
         )
+    print(f"Hub push enabled: {push_to_hub}")
+    print(f"Model cache volume: {CACHE_VOLUME_NAME}")
 
     kwargs = dict(
         env_repo_id=env_repo_id,
@@ -906,6 +1120,7 @@ def main(
         source_mode=source_mode,
         repo_url=repo_url,
         repo_branch=repo_branch,
+        push_to_hub=push_to_hub,
     )
     if detach:
         call = train_cybersecurity_owasp_grpo.spawn(**kwargs)

@@ -45,7 +45,7 @@ server = "CyberSecurity_OWASP.server.app:main"
 
 [tool.setuptools]
 include-package-data = true
-packages = ["CyberSecurity_OWASP", "CyberSecurity_OWASP.server"]
+packages = ["CyberSecurity_OWASP", "CyberSecurity_OWASP.server", "training"]
 package-dir = { "CyberSecurity_OWASP" = ".", "CyberSecurity_OWASP.server" = "server" }
 
 [tool.pytest.ini_options]

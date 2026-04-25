@@ -12,6 +12,8 @@ the local process, so the run disappears when ``modal run`` exits.
 from __future__ import annotations
 
 import json
+import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,7 @@ import modal
 
 
 APP_NAME = "CyberSecurity_OWASP-ephemeral-training"
+SECRET_NAME = "CyberSecurity_OWASP-secrets"
 REMOTE_PROJECT = "/root/CyberSecurity_OWASP"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -63,7 +66,11 @@ class NoopTrainer:
         ]
 
 
-@app.function(image=image, timeout=60 * 30)
+@app.function(
+    image=image,
+    timeout=60 * 30,
+    secrets=[modal.Secret.from_name(SECRET_NAME, required_keys=["HF_TOKEN"])],
+)
 def run_ephemeral_smoke(
     episodes: int = 4,
     seed_start: int = 0,
@@ -75,17 +82,45 @@ def run_ephemeral_smoke(
         CybersecurityOwaspEnvironment,
     )
     from training.rollout import rollout_once
-    from training.trackio_utils import log_trackio_metrics, trackio_run
+    from training.trackio_utils import (
+        aggregate_episode_metrics,
+        episode_record_from_state,
+        log_episode_batch,
+        log_trackio_metrics,
+        trace_table_rows,
+        trackio_run,
+    )
 
     baseline = []
     oracle = []
+    run_context = {
+        "algo": "modal_ephemeral_smoke",
+        "reward_version": "reward_v1",
+        "env_version": "0.1.0",
+    }
 
     for offset in range(episodes):
         seed = seed_start + offset
 
         baseline_env = CybersecurityOwaspEnvironment()
-        baseline_env.reset(seed=seed, split="validation")
-        baseline.append(rollout_once(NoopTrainer(), baseline_env, max_steps=5))
+        baseline_rollout = rollout_once(
+            NoopTrainer(),
+            baseline_env,
+            max_steps=5,
+            reset_kwargs={"seed": seed, "split": "validation", "difficulty": 0},
+        )
+        baseline_record = episode_record_from_state(
+            baseline_env.state,
+            run_context={**run_context, "base_model": "noop"},
+        )
+        baseline_record.update(
+            {
+                "reward_total": baseline_rollout.get("reward_total", 0.0),
+                "success": baseline_rollout.get("success", False),
+                "episode_length": baseline_rollout.get("episode_length", 0),
+            }
+        )
+        baseline.append(baseline_record)
 
         oracle_env = CybersecurityOwaspEnvironment()
         oracle_env.reset(seed=seed, split="validation")
@@ -124,19 +159,25 @@ def run_ephemeral_smoke(
         )
         oracle_env.step(CyberSecurityOWASPAction(tool_name="run_visible_tests"))
         final = oracle_env.step(CyberSecurityOWASPAction(tool_name="submit_fix"))
-        oracle.append(
+        oracle_record = episode_record_from_state(
+            oracle_env.state,
+            run_context={**run_context, "base_model": "oracle"},
+            final_observation=final.model_dump(),
+        )
+        oracle_record.update(
             {
-                "seed": seed,
-                "success": oracle_env.state.success,
                 "reward_total": final.reward_breakdown.get("total", 0.0),
-                "reward_breakdown": final.reward_breakdown,
+                "success": oracle_env.state.success,
             }
         )
+        oracle.append(oracle_record)
 
     def mean(items: list[dict[str, Any]], key: str) -> float:
         return sum(float(item.get(key, 0.0)) for item in items) / max(1, len(items))
 
     run_name = f"{APP_NAME}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+    episode_records = [*baseline, *oracle]
+    tracking_metrics = aggregate_episode_metrics(episode_records)
     result = {
         "run_name": run_name,
         "mode": "smoke",
@@ -145,6 +186,8 @@ def run_ephemeral_smoke(
         "baseline_mean_reward": mean(baseline, "reward_total"),
         "oracle_mean_reward": mean(oracle, "reward_total"),
         "oracle_success_rate": mean(oracle, "success"),
+        "tracking_metrics": tracking_metrics,
+        "tracking_trace_rows": trace_table_rows(episode_records),
         "baseline": baseline,
         "oracle": oracle,
     }
@@ -160,8 +203,10 @@ def run_ephemeral_smoke(
         },
         group="smoke",
     ):
+        logged_metrics = log_episode_batch(episode_records, step=0)
         log_trackio_metrics(
             {
+                **logged_metrics,
                 "smoke/baseline_mean_reward": result["baseline_mean_reward"],
                 "smoke/oracle_mean_reward": result["oracle_mean_reward"],
                 "smoke/oracle_success_rate": result["oracle_success_rate"],
@@ -179,6 +224,130 @@ def run_grpo_config_check() -> str:
     return str(build_grpo_config())
 
 
+@app.function(
+    image=image,
+    timeout=60 * 10,
+    secrets=[modal.Secret.from_name(SECRET_NAME, required_keys=["HF_TOKEN"])],
+)
+def verify_trackio_run(
+    run_name: str,
+    trackio_space_id: str = "Humanlearning/CyberSecurity_OWASP-trackio",
+    trackio_project: str = "CyberSecurity_OWASP-smoke",
+) -> dict[str, Any]:
+    import os
+    from training.trackio_utils import (
+        REQUIRED_SMOKE_TRACKIO_ITEMS,
+        missing_required_trackio_items,
+    )
+
+    hf_token = os.environ["HF_TOKEN"]
+    cmd = [
+        "trackio",
+        "get",
+        "run",
+        "--project",
+        trackio_project,
+        "--run",
+        run_name,
+        "--space",
+        trackio_space_id,
+        "--hf-token",
+        hf_token,
+        "--json",
+    ]
+    metrics_cmd = [
+        "trackio",
+        "list",
+        "metrics",
+        "--project",
+        trackio_project,
+        "--run",
+        run_name,
+        "--space",
+        trackio_space_id,
+        "--hf-token",
+        hf_token,
+        "--json",
+    ]
+    last_result: dict[str, Any] = {}
+    for attempt in range(1, 4):
+        completed = subprocess.run(cmd, capture_output=True, text=True)
+        metrics_completed = subprocess.run(metrics_cmd, capture_output=True, text=True)
+        last_result = {
+            "attempt": attempt,
+            "returncode": completed.returncode,
+            "stdout": completed.stdout[-4000:],
+            "stderr": completed.stderr[-4000:],
+            "metrics_returncode": metrics_completed.returncode,
+            "metrics_stdout": metrics_completed.stdout[-4000:],
+            "metrics_stderr": metrics_completed.stderr[-4000:],
+        }
+        if completed.returncode == 0:
+            data = json.loads(completed.stdout)
+            if metrics_completed.returncode == 0:
+                metrics_data = json.loads(metrics_completed.stdout)
+                if isinstance(metrics_data.get("metrics"), list):
+                    data["metrics"] = metrics_data["metrics"]
+            missing = missing_required_trackio_items(data, REQUIRED_SMOKE_TRACKIO_ITEMS)
+            return {
+                "ok": not missing,
+                "trackio_space_id": trackio_space_id,
+                "trackio_project": trackio_project,
+                "run_name": run_name,
+                "required_items": list(REQUIRED_SMOKE_TRACKIO_ITEMS),
+                "missing_required_items": missing,
+                "run": data,
+            }
+        time.sleep(10)
+    return {
+        "ok": False,
+        "trackio_space_id": trackio_space_id,
+        "trackio_project": trackio_project,
+        "run_name": run_name,
+        "last_result": last_result,
+    }
+
+
+@app.function(
+    image=image,
+    timeout=60 * 10,
+    secrets=[modal.Secret.from_name(SECRET_NAME, required_keys=["HF_TOKEN"])],
+)
+def inspect_trackio_space(
+    trackio_space_id: str = "Humanlearning/CyberSecurity_OWASP-trackio",
+) -> dict[str, Any]:
+    import os
+
+    hf_token = os.environ["HF_TOKEN"]
+
+    def run_trackio(args: list[str]) -> dict[str, Any]:
+        completed = subprocess.run(
+            ["trackio", *args, "--space", trackio_space_id, "--hf-token", hf_token, "--json"],
+            capture_output=True,
+            text=True,
+        )
+        result = {
+            "returncode": completed.returncode,
+            "stdout": completed.stdout[-8000:],
+            "stderr": completed.stderr[-4000:],
+        }
+        if completed.returncode == 0:
+            result["json"] = json.loads(completed.stdout)
+        return result
+
+    projects_result = run_trackio(["list", "projects"])
+    projects = (projects_result.get("json") or {}).get("projects", [])
+    runs_by_project = {
+        project: run_trackio(["list", "runs", "--project", project])
+        for project in projects
+    }
+    return {
+        "trackio_space_id": trackio_space_id,
+        "projects": projects_result,
+        "runs_by_project": runs_by_project,
+    }
+
+
 @app.local_entrypoint()
 def main(
     mode: str = "smoke",
@@ -186,6 +355,7 @@ def main(
     seed_start: int = 0,
     trackio_space_id: str = "",
     trackio_project: str = "CyberSecurity_OWASP-smoke",
+    run_name: str = "",
 ) -> None:
     if mode == "smoke":
         result = run_ephemeral_smoke.remote(
@@ -201,5 +371,23 @@ def main(
         print(json.dumps({"saved": str(output_path), **result}, indent=2, sort_keys=True))
     elif mode == "grpo-config":
         print(run_grpo_config_check.remote())
+    elif mode == "verify-trackio":
+        if not run_name:
+            raise ValueError("--run-name is required for verify-trackio mode")
+        result = verify_trackio_run.remote(
+            run_name=run_name,
+            trackio_space_id=trackio_space_id
+            or "Humanlearning/CyberSecurity_OWASP-trackio",
+            trackio_project=trackio_project,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+    elif mode == "inspect-trackio":
+        result = inspect_trackio_space.remote(
+            trackio_space_id=trackio_space_id
+            or "Humanlearning/CyberSecurity_OWASP-trackio",
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
     else:
-        raise ValueError("mode must be 'smoke' or 'grpo-config'")
+        raise ValueError(
+            "mode must be 'smoke', 'grpo-config', 'verify-trackio', or 'inspect-trackio'"
+        )

@@ -397,16 +397,18 @@ Editable source: `assets/env_rl_training_flow_diagram.mmd`
 9. Produce final demo: before/after trace + reward curve + held-out eval table.
 ```
 
-Recommended initial training setup:
+Recommended initial training setup (Modal-first):
 
 ```text
-Model: Qwen/Qwen3-1.7B or similar small instruct model
+Model: google/gemma-2-2b-it (or compatible Gemma-class instruct model)
 Algorithm: GRPO via TRL or Unsloth-compatible loop
 Dataset prompt: repeated task instruction with randomized scenario IDs
 Max steps per episode: 30
 Rollouts per prompt: 2-4
 Logging: Trackio
 Primary eval: held-out deterministic test pass rate
+
+Training execution is expected to run on Modal (persistent or ephemeral) rather than locally.
 ```
 
 ## 9. Deployment architecture

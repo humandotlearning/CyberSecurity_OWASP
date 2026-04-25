@@ -38,8 +38,15 @@ def generate_rollout_completions(trainer, prompts: list[str]) -> list[dict[str, 
     ]
 
 
-def rollout_once(trainer, env, tokenizer=None, dataset_prompt: str = "", max_steps: int = 40) -> dict:
-    result = env.reset()
+def rollout_once(
+    trainer,
+    env,
+    tokenizer=None,
+    dataset_prompt: str = "",
+    max_steps: int = 40,
+    reset_kwargs: dict[str, Any] | None = None,
+) -> dict:
+    result = env.reset(**(reset_kwargs or {}))
     observation = result.observation if hasattr(result, "observation") else result
 
     prompt_ids = []

@@ -149,6 +149,10 @@ Training files are under `training/`:
 
 The training scaffold is intentionally minimal until the environment/verifier behavior is stable. Trackio metric names and GRPO defaults follow the project brief.
 
+`training/train_grpo.py` in this repo is a config helper only; it does not execute training locally.
+Use the Modal launchers in `scripts/modal_train_grpo.py` (persistent) and
+`scripts/modal_ephemeral_train.py` (smoke) for real GRPO runs.
+
 ## Trackio Run Tracking
 
 Trackio is the default tracker for official runs. Set `TRACKIO_SPACE_ID` to log to a hosted Hugging Face Trackio Space; otherwise Trackio records locally.
@@ -239,7 +243,7 @@ Defaults are derived from `HF_TOKEN`:
 
 - Trackio Space: `<hf-user>/CyberSecurity_OWASP-trackio`
 - Trackio project: `CyberSecurity_OWASP-grpo`
-- Output repo: `<hf-user>/CyberSecurity_OWASP-qwen3-1.7b-grpo-lora`
+- Output repo: `<hf-user>/CyberSecurity_OWASP-gemma-2-2b-grpo-lora`
 
 Override these with `--trackio-space-id`, `--trackio-project`, and
 `--output-repo-id` when needed.

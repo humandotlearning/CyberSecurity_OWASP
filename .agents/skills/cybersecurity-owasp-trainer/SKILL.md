@@ -7,7 +7,9 @@ description: Train, debug, evaluate, and document CyberSecurity_OWASP model runs
 
 ## Overview
 
-Use this skill to run or modify the CyberSecurity_OWASP training and evaluation loop without weakening the verifier, reward integrity, or hackathon evidence trail. Treat the environment and reward engine as the product; training only starts after those are stable.
+Use this skill to run or modify the CyberSecurity_OWASP training and evaluation loop without weakening the verifier, reward integrity, or hackathon evidence trail. Training is expected to run on Modal only.
+
+Important: do **not** run GRPO/PPO training loops locally in this repo. Use Modal launchers (`scripts/modal_ephemeral_train.py` for smoke and `scripts/modal_train_grpo.py` for GRPO).
 
 ## References
 
@@ -37,28 +39,28 @@ Prefer the existing repo modules:
 
 - `training/rollout.py`: full OpenEnv episode loop, action JSON parsing, reward trace, rollout artifact fields.
 - `training/reward_funcs.py`: component reward functions exposed to TRL/GRPO.
-- `training/train_grpo.py`: `GRPOConfig`, model defaults, Trackio reporting, vLLM settings.
+- `training/train_grpo.py`: `GRPOConfig`/model defaults and launch intent (does not run local training).
 - `training/eval_before_after.py`: baseline-vs-trained and held-out summary metrics.
 - `training/trackio_utils.py`: run naming, canonical metric names, Trackio init/log/finalize helpers.
 
 Default environment values:
 
 ```powershell
-$env:MODEL_NAME = "Qwen/Qwen3-1.7B"
+$env:MODEL_NAME = "google/gemma-2-2b-it"
 $env:TRACKIO_SPACE_ID = "Humanlearning/CyberSecurity_OWASP-trackio"
 $env:TRACKIO_PROJECT = "CyberSecurity_OWASP"
 $env:DIFFICULTY = "0"
 ```
 
-Use level-0 debug runs before scaling. Do not increase batch size, prompt count, scenario diversity, or difficulty until sampled artifacts show real discover-then-patch behavior rather than formatting compliance only.
+Use level-0 debug runs before scaling, and verify them through Modal smoke/ephemeral runs.
 
 ## Training Workflow
 
 1. Validate the environment first: run the targeted tests that cover models, reset/step/state, rewards, anti-cheat, seed reproducibility, invalid actions, and rollouts.
-2. Run a tiny smoke path that constructs `GRPOConfig` without starting expensive training.
-3. Run a frozen-model or dummy-policy rollout and inspect the action trace, observations, terminal reason, and reward breakdown.
+2. Run a Modal smoke path for lightweight config/run verification.
+3. Run a frozen-model or dummy-policy rollout on Modal and inspect the action trace, observations, terminal reason, and reward breakdown.
 4. Confirm Trackio receives component metrics and the run name follows `CyberSecurity_OWASP-<model>-<algo>-level<difficulty>-<YYYYMMDD-HHMM>-<git_sha>`.
-5. Start a very small GRPO run only after the above passes. Watch completions and rollout artifacts during the run, not just aggregate reward.
+5. Start a very small GRPO run only after the above passes. Start via `scripts/modal_train_grpo.py --mode train`.
 6. Evaluate baseline, trained, and held-out splits with `training/eval_before_after.py` and save summaries under `outputs/evals/`.
 7. Save sampled rollouts under `outputs/rollouts/` for baseline, mid-training, trained, and held-out evidence.
 
@@ -77,7 +79,7 @@ Stop or roll back if reward rises while sampled traces show deny-all patches, ha
 
 - Use TRL GRPO for verifier-driven rewards. Keep multiple independent reward functions for logging and diagnosis.
 - Keep the existing custom rollout path unless deliberately migrating to TRL's `environment_factory`. If migrating, preserve typed actions, observations, reward component logging, anti-cheat flags, and rollout artifacts.
-- Use vLLM colocate for small local runs when memory allows; use server mode only when a separate inference GPU/server is available.
+- Use Modal as the default training path; local-only vLLM/GRPO execution is intentionally avoided in this repository.
 - For OpenEnv server training concurrency, ensure the server supports enough concurrent sessions for the generation batch.
 - Use Unsloth with LoRA or QLoRA for memory efficiency when the training machine supports it. Start from an instruct-capable checkpoint and verify the model has non-zero success probability before RL.
 - Pin and smoke-test TRL, Unsloth, vLLM, CUDA, and torch versions before longer runs.
