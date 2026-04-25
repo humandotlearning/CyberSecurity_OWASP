@@ -1,99 +1,39 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
+"""CyberSecurity_OWASP OpenEnv client."""
 
-"""Cybersecurity Owasp Environment Client."""
+from __future__ import annotations
 
-from typing import Dict
+from typing import Any
 
 from openenv.core import EnvClient
 from openenv.core.client_types import StepResult
-from openenv.core.env_server.types import State
 
-from .models import CybersecurityOwaspAction, CybersecurityOwaspObservation
+from .models import (
+    CyberSecurityOWASPAction,
+    CyberSecurityOWASPObservation,
+    CyberSecurityOWASPState,
+)
 
 
-class CybersecurityOwaspEnv(
-    EnvClient[CybersecurityOwaspAction, CybersecurityOwaspObservation, State]
+class CyberSecurityOWASPEnv(
+    EnvClient[CyberSecurityOWASPAction, CyberSecurityOWASPObservation, CyberSecurityOWASPState]
 ):
-    """
-    Client for the Cybersecurity Owasp Environment.
+    """WebSocket client for the CyberSecurity_OWASP environment."""
 
-    This client maintains a persistent WebSocket connection to the environment server,
-    enabling efficient multi-step interactions with lower latency.
-    Each client instance has its own dedicated environment session on the server.
+    def _step_payload(self, action: CyberSecurityOWASPAction) -> dict[str, Any]:
+        return action.model_dump()
 
-    Example:
-        >>> # Connect to a running server
-        >>> with CybersecurityOwaspEnv(base_url="http://localhost:8000") as client:
-        ...     result = client.reset()
-        ...     print(result.observation.echoed_message)
-        ...
-        ...     result = client.step(CybersecurityOwaspAction(message="Hello!"))
-        ...     print(result.observation.echoed_message)
-
-    Example with Docker:
-        >>> # Automatically start container and connect
-        >>> client = CybersecurityOwaspEnv.from_docker_image("CyberSecurity_OWASP-env:latest")
-        >>> try:
-        ...     result = client.reset()
-        ...     result = client.step(CybersecurityOwaspAction(message="Test"))
-        ... finally:
-        ...     client.close()
-    """
-
-    def _step_payload(self, action: CybersecurityOwaspAction) -> Dict:
-        """
-        Convert CybersecurityOwaspAction to JSON payload for step message.
-
-        Args:
-            action: CybersecurityOwaspAction instance
-
-        Returns:
-            Dictionary representation suitable for JSON encoding
-        """
-        return {
-            "message": action.message,
-        }
-
-    def _parse_result(self, payload: Dict) -> StepResult[CybersecurityOwaspObservation]:
-        """
-        Parse server response into StepResult[CybersecurityOwaspObservation].
-
-        Args:
-            payload: JSON response data from server
-
-        Returns:
-            StepResult with CybersecurityOwaspObservation
-        """
+    def _parse_result(self, payload: dict[str, Any]) -> StepResult[CyberSecurityOWASPObservation]:
         obs_data = payload.get("observation", {})
-        observation = CybersecurityOwaspObservation(
-            echoed_message=obs_data.get("echoed_message", ""),
-            message_length=obs_data.get("message_length", 0),
-            done=payload.get("done", False),
-            reward=payload.get("reward"),
-            metadata=obs_data.get("metadata", {}),
-        )
-
+        observation = CyberSecurityOWASPObservation(**obs_data)
         return StepResult(
             observation=observation,
-            reward=payload.get("reward"),
-            done=payload.get("done", False),
+            reward=payload.get("reward", observation.reward),
+            done=payload.get("done", observation.done),
         )
 
-    def _parse_state(self, payload: Dict) -> State:
-        """
-        Parse server response into State object.
+    def _parse_state(self, payload: dict[str, Any]) -> CyberSecurityOWASPState:
+        return CyberSecurityOWASPState(**payload)
 
-        Args:
-            payload: JSON response from state request
 
-        Returns:
-            State object with episode_id and step_count
-        """
-        return State(
-            episode_id=payload.get("episode_id"),
-            step_count=payload.get("step_count", 0),
-        )
+# Backward-compatible alias from generated scaffold.
+CybersecurityOwaspEnv = CyberSecurityOWASPEnv
