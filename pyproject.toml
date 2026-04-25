@@ -19,6 +19,7 @@ dependencies = [
     # "openenv-core[core] @ git+https://github.com/meta-pytorch/OpenEnv.git",
     "openenv-core[core]>=0.2.2",
     "trackio>=0.22.0",
+    "PyYAML>=6.0",
     # Environment-specific dependencies
     # Add all dependencies needed for your environment here
     # Examples:
@@ -47,6 +48,10 @@ server = "CyberSecurity_OWASP.server.app:main"
 include-package-data = true
 packages = ["CyberSecurity_OWASP", "CyberSecurity_OWASP.server", "training"]
 package-dir = { "CyberSecurity_OWASP" = ".", "CyberSecurity_OWASP.server" = "server" }
+
+[tool.setuptools.package-data]
+CyberSecurity_OWASP = ["configs/*.json"]
+training = ["configs/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

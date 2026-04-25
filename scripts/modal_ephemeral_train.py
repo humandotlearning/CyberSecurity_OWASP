@@ -12,6 +12,7 @@ the local process, so the run disappears when ``modal run`` exits.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from datetime import datetime
@@ -23,14 +24,18 @@ import modal
 
 APP_NAME = "CyberSecurity_OWASP-ephemeral-training"
 SECRET_NAME = "CyberSecurity_OWASP-secrets"
+SCENARIO_CACHE_VOLUME_NAME = "CyberSecurity_OWASP-scenario-cache"
+SCENARIO_CACHE_DIR = Path("/scenario-cache")
 REMOTE_PROJECT = "/root/CyberSecurity_OWASP"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 app = modal.App(APP_NAME)
+scenario_cache_volume = modal.Volume.from_name(SCENARIO_CACHE_VOLUME_NAME, create_if_missing=True)
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git")
+    .pip_install("openenv-core[core]>=0.2.2", "trackio>=0.22.0")
     .add_local_dir(
         PROJECT_ROOT,
         remote_path=REMOTE_PROJECT,
@@ -46,9 +51,15 @@ image = (
             "*.pyc",
         ],
     )
-    .run_commands(f"pip install -e {REMOTE_PROJECT}")
+    .run_commands(f"pip install --no-deps -e {REMOTE_PROJECT}")
     .workdir(REMOTE_PROJECT)
 )
+
+
+def _configure_scenario_cache_env(*, required: bool = True) -> None:
+    SCENARIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    os.environ["CYBERSECURITY_OWASP_SCENARIO_CACHE_DIR"] = str(SCENARIO_CACHE_DIR)
+    os.environ["CYBERSECURITY_OWASP_SCENARIO_CACHE_MODE"] = "require" if required else "fallback"
 
 
 class NoopTrainer:
@@ -68,7 +79,47 @@ class NoopTrainer:
 
 @app.function(
     image=image,
+    timeout=60 * 60,
+    volumes={SCENARIO_CACHE_DIR: scenario_cache_volume},
+)
+def prepare_ephemeral_scenario_cache(
+    seed_start: int = 0,
+    difficulty_buckets: int = 0,
+    train_per_bucket: int = 0,
+    validation_per_bucket: int = 0,
+    heldout_per_bucket: int = 0,
+    force: bool = False,
+) -> dict[str, Any]:
+    import os
+
+    if difficulty_buckets:
+        os.environ["CYBERSECURITY_OWASP_DIFFICULTY_BUCKETS"] = str(difficulty_buckets)
+    if train_per_bucket:
+        os.environ["CYBERSECURITY_OWASP_TRAIN_SCENARIOS_PER_BUCKET"] = str(train_per_bucket)
+    if validation_per_bucket:
+        os.environ["CYBERSECURITY_OWASP_VALIDATION_SCENARIOS_PER_BUCKET"] = str(validation_per_bucket)
+    if heldout_per_bucket:
+        os.environ["CYBERSECURITY_OWASP_HELDOUT_SCENARIOS_PER_BUCKET"] = str(heldout_per_bucket)
+    _configure_scenario_cache_env(required=False)
+    from CyberSecurity_OWASP.config import load_scenario_authoring_config
+    from CyberSecurity_OWASP.server.scenario_cache import prepare_scenario_cache
+
+    settings = load_scenario_authoring_config()
+    result = prepare_scenario_cache(
+        cache_dir=SCENARIO_CACHE_DIR,
+        settings=settings,
+        seed_start=seed_start,
+        force=force,
+    )
+    scenario_cache_volume.commit()
+    result["scenario_cache_volume"] = SCENARIO_CACHE_VOLUME_NAME
+    return result
+
+
+@app.function(
+    image=image,
     timeout=60 * 30,
+    volumes={SCENARIO_CACHE_DIR: scenario_cache_volume},
     secrets=[modal.Secret.from_name(SECRET_NAME, required_keys=["HF_TOKEN"])],
 )
 def run_ephemeral_smoke(
@@ -77,10 +128,13 @@ def run_ephemeral_smoke(
     trackio_space_id: str = "",
     trackio_project: str = "CyberSecurity_OWASP-smoke",
 ) -> dict[str, Any]:
+    _configure_scenario_cache_env(required=True)
     from CyberSecurity_OWASP.models import CyberSecurityOWASPAction
+    from CyberSecurity_OWASP.config import load_scenario_authoring_config
     from CyberSecurity_OWASP.server.CyberSecurity_OWASP_environment import (
         CybersecurityOwaspEnvironment,
     )
+    from CyberSecurity_OWASP.server.scenario_cache import ScenarioCache
     from training.rollout import rollout_once
     from training.trackio_utils import (
         aggregate_episode_metrics,
@@ -91,11 +145,26 @@ def run_ephemeral_smoke(
         trackio_run,
     )
 
+    scenario_cache_volume.reload()
+    settings = load_scenario_authoring_config()
+    cache_coverage = ScenarioCache(SCENARIO_CACHE_DIR, settings=settings).assert_coverage(
+        split="validation",
+        difficulty=0,
+    )
+    available_scenarios = int(
+        cache_coverage.get("counts", {}).get("validation", {}).get("0", 0)
+    )
+    if available_scenarios < episodes:
+        raise RuntimeError(
+            "Scenario cache does not cover this smoke run. Run prepare-cache "
+            f"with a larger validation count. available={available_scenarios}, episodes={episodes}"
+        )
+
     baseline = []
     oracle = []
     run_context = {
         "algo": "modal_ephemeral_smoke",
-        "reward_version": "reward_v1",
+        "reward_version": "reward_v2",
         "env_version": "0.1.0",
     }
 
@@ -125,16 +194,28 @@ def run_ephemeral_smoke(
         oracle_env = CybersecurityOwaspEnvironment()
         oracle_env.reset(seed=seed, split="validation")
         hidden = oracle_env.state.hidden_facts
+        evidence = oracle_env.step(
+            CyberSecurityOWASPAction(
+                tool_name="send_local_request",
+                arguments={
+                    "method": "GET",
+                    "path": f"/invoices/{hidden['other_invoice_id']}",
+                    "user_id": hidden["owner_user_id"],
+                },
+            )
+        )
+        trace_id = "req_001"
+        if '"trace_id": "req_' in evidence.last_tool_result:
+            trace_id = evidence.last_tool_result.split('"trace_id": "', 1)[1].split('"', 1)[0]
         oracle_env.step(
             CyberSecurityOWASPAction(
-                tool_name="submit_finding",
+                tool_name="submit_diagnosis",
                 arguments={
-                    "summary": "BOLA/IDOR authorization bug in invoice read route.",
-                    "evidence": (
-                        f"user {hidden['owner_user_id']} can request invoice "
-                        f"{hidden['other_invoice_id']} despite the owner/admin policy"
-                    ),
-                    "policy_rule": "Only owner or billing_admin in same tenant may read invoices.",
+                    "bug_class": "idor_ownership_bug",
+                    "route": "GET /invoices/{invoice_id}",
+                    "violated_policy_rule": "Only owner or billing_admin in same tenant may read invoices.",
+                    "evidence_trace_ids": [trace_id],
+                    "fix_plan": "Add tenant and owner/admin checks before returning invoice data.",
                 },
             )
         )
@@ -186,6 +267,9 @@ def run_ephemeral_smoke(
         "baseline_mean_reward": mean(baseline, "reward_total"),
         "oracle_mean_reward": mean(oracle, "reward_total"),
         "oracle_success_rate": mean(oracle, "success"),
+        "scenario_cache_volume": SCENARIO_CACHE_VOLUME_NAME,
+        "scenario_cache_mode": "require",
+        "scenario_cache_coverage": cache_coverage,
         "tracking_metrics": tracking_metrics,
         "tracking_trace_rows": trace_table_rows(episode_records),
         "baseline": baseline,
@@ -356,8 +440,23 @@ def main(
     trackio_space_id: str = "",
     trackio_project: str = "CyberSecurity_OWASP-smoke",
     run_name: str = "",
+    cache_difficulty_buckets: int = 0,
+    cache_train_per_bucket: int = 0,
+    cache_validation_per_bucket: int = 0,
+    cache_heldout_per_bucket: int = 0,
+    cache_force: bool = False,
 ) -> None:
-    if mode == "smoke":
+    if mode == "prepare-cache":
+        result = prepare_ephemeral_scenario_cache.remote(
+            seed_start=seed_start,
+            difficulty_buckets=cache_difficulty_buckets,
+            train_per_bucket=cache_train_per_bucket,
+            validation_per_bucket=cache_validation_per_bucket,
+            heldout_per_bucket=cache_heldout_per_bucket,
+            force=cache_force,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+    elif mode == "smoke":
         result = run_ephemeral_smoke.remote(
             episodes=episodes,
             seed_start=seed_start,
@@ -389,5 +488,5 @@ def main(
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
         raise ValueError(
-            "mode must be 'smoke', 'grpo-config', 'verify-trackio', or 'inspect-trackio'"
+            "mode must be 'prepare-cache', 'smoke', 'grpo-config', 'verify-trackio', or 'inspect-trackio'"
         )

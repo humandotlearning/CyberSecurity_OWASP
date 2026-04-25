@@ -32,7 +32,7 @@ Recheck these pages before major dependency upgrades because TRL, OpenEnv integr
 - Start from a capable instruct model or lightly format-tuned model. If success probability is effectively zero, RL will not bootstrap.
 - Keep reward functions/verifiers simple and trustworthy first; add shaping only after sparse reward blocks learning.
 - Unsloth recipes commonly use Qwen, Gemma, Llama, Phi, Mistral, and gpt-oss variants. For this repo, prefer the configured `Qwen/Qwen3-1.7B` or another small instruct/coder checkpoint for smoke runs.
-- For Unsloth-specific GRPO recipes, use more than two generations per prompt when hardware allows. Keep the repo's small `num_generations=2` only as a low-cost smoke/debug default unless tests prove it is sufficient.
+- For Unsloth-specific GRPO recipes, use more than two generations per prompt when hardware allows. In this repo, keep `num_generations=2` only for smoke/debug runs; for non-smoke training runs default to `num_generations>=6`.
 - Pin torch, CUDA, vLLM, TRL, and Unsloth versions for any serious run, then run a short smoke test before scaling.
 
 ## Saving And Serving

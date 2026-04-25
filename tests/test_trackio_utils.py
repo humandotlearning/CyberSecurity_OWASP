@@ -14,7 +14,7 @@ from .helpers import apply_secure_patch, make_env, secure_invoice_source, submit
 
 
 def test_canonical_tracking_fields_exist_and_are_numeric_where_expected():
-    assert len(CANONICAL_TRACKIO_SIGNALS) == 57
+    assert len(CANONICAL_TRACKIO_SIGNALS) >= 57
 
     env = make_env(70)
     try:

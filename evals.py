@@ -51,11 +51,13 @@ def oracle_policy(original_source: str) -> list[CyberSecurityOWASPAction]:
             arguments={"method": "GET", "path": "__EXPLOIT_PATH__", "user_id": "__EXPLOIT_USER__"},
         ),
         CyberSecurityOWASPAction(
-            tool_name="submit_finding",
+            tool_name="submit_diagnosis",
             arguments={
-                "summary": "BOLA/IDOR authorization bug: same-tenant user can read another user's invoice.",
-                "evidence": "__EVIDENCE__",
-                "policy_rule": "Only the owner or billing_admin in the same tenant may read invoices.",
+                "bug_class": "idor_ownership_bug",
+                "route": "GET /invoices/{invoice_id}",
+                "violated_policy_rule": "Only the owner or billing_admin in the same tenant may read invoices.",
+                "evidence_trace_ids": ["req_001"],
+                "fix_plan": "Add tenant and owner/admin checks before returning invoice data.",
             },
         ),
         CyberSecurityOWASPAction(

@@ -15,12 +15,21 @@ from training.trackio_utils import build_run_name, get_git_sha
 DEFAULT_GEMMA_MODEL = os.getenv("MODEL_NAME", "unsloth/gemma-4-E2B-it")
 
 
+def ensure_gemma4_model(model_name: str) -> str:
+    if model_name != "unsloth/gemma-4-E2B-it":
+        raise ValueError(
+            "CyberSecurity_OWASP GRPO is pinned to unsloth/gemma-4-E2B-it, "
+            "matching the Unsloth Gemma 4 E2B RL notebook."
+        )
+    return model_name
+
+
 def build_grpo_config():
     """Build the TRL GRPOConfig used by the Modal training pipeline."""
 
     from trl import GRPOConfig
 
-    model_name = os.getenv("MODEL_NAME", DEFAULT_GEMMA_MODEL)
+    model_name = ensure_gemma4_model(os.getenv("MODEL_NAME", DEFAULT_GEMMA_MODEL))
     difficulty = int(os.getenv("DIFFICULTY", "0"))
     output_dir = os.getenv(
         "OUTPUT_DIR",
@@ -43,7 +52,7 @@ def build_grpo_config():
         num_train_epochs=1,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=32,
-        num_generations=2,
+        num_generations=6,
         max_prompt_length=4096,
         max_completion_length=768,
         use_vllm=True,
@@ -78,7 +87,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    os.environ["MODEL_NAME"] = args.model_name
+    os.environ["MODEL_NAME"] = ensure_gemma4_model(args.model_name)
     if args.output_dir:
         os.environ["OUTPUT_DIR"] = args.output_dir
 

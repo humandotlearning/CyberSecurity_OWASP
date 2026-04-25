@@ -59,6 +59,7 @@ class AppSandbox:
             )
         )
         self.state.patch_diff = patch_diff
+        self.state.patch_attempt_count += 1
         files_touched = self.state.metrics.setdefault("files_touched", [])
         if path not in files_touched:
             files_touched.append(path)
@@ -84,7 +85,14 @@ class AppSandbox:
     def send_local_request(self, method: str, path: str, user_id: str | None = None) -> dict[str, Any]:
         if not is_local_route(path):
             raise ValueError("send_local_request only accepts local route paths")
-        return simulate_request(self.state, method, path, user_id)
+        response = simulate_request(self.state, method, path, user_id)
+        trace_id = self._record_request_trace(
+            method=method,
+            path=path,
+            user_id=user_id,
+            status=int(response.get("status", 0) or 0),
+        )
+        return {"trace_id": trace_id, **response}
 
     def compare_identities(
         self,
@@ -95,10 +103,58 @@ class AppSandbox:
     ) -> dict[str, Any]:
         if not is_local_route(path):
             raise ValueError("compare_identities only accepts local route paths")
+        first = simulate_request(self.state, method, path, first_user_id)
+        second = simulate_request(self.state, method, path, second_user_id)
+        trace_id = self._record_request_trace(
+            method=method,
+            path=path,
+            user_id=first_user_id,
+            status=int(first.get("status", 0) or 0),
+            comparison_user_id=second_user_id,
+            comparison_status=int(second.get("status", 0) or 0),
+        )
         return {
-            "first": simulate_request(self.state, method, path, first_user_id),
-            "second": simulate_request(self.state, method, path, second_user_id),
+            "trace_id": trace_id,
+            "first": first,
+            "second": second,
         }
+
+    def _record_request_trace(
+        self,
+        *,
+        method: str,
+        path: str,
+        user_id: str | None,
+        status: int,
+        comparison_user_id: str | None = None,
+        comparison_status: int | None = None,
+    ) -> str:
+        trace_id = f"req_{len(self.state.request_trace) + 1:03d}"
+        hidden = self.state.hidden_facts
+        unauthorized_success = (
+            str(hidden.get("other_invoice_id", "")) in path
+            and user_id == hidden.get("owner_user_id")
+            and status == 200
+        )
+        if comparison_user_id is not None and comparison_status is not None:
+            unauthorized_success = unauthorized_success or (
+                str(hidden.get("other_invoice_id", "")) in path
+                and comparison_user_id == hidden.get("owner_user_id")
+                and comparison_status == 200
+            )
+        self.state.request_trace.append(
+            {
+                "trace_id": trace_id,
+                "method": method.upper(),
+                "path": path,
+                "user_id": user_id,
+                "status": status,
+                "comparison_user_id": comparison_user_id,
+                "comparison_status": comparison_status,
+                "unauthorized_success": unauthorized_success,
+            }
+        )
+        return trace_id
 
     def _resolve_path(self, path: str, *, write: bool = False) -> Path:
         allowed, normalized_or_error = is_path_allowed(self.state, path, write=write)

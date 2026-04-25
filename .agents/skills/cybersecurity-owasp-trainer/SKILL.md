@@ -29,6 +29,8 @@ Do not start real training until all checks below are true:
 - A local server or Docker server can run, and at least one manual episode completes.
 - Scripted random, bad, and oracle policies run without crashing; oracle gets high reward on easy seeds.
 - At least 10 validation rollouts complete and sampled rollout artifacts look behaviorally plausible.
+- The validated scenario cache exists, is mounted, and meets the configured split/difficulty minimums.
+- Modal smoke and GRPO runs use `CYBERSECURITY_OWASP_SCENARIO_CACHE_MODE=require`; runtime `reset()` must not compile scenarios or call an LLM during training/eval.
 - Trackio run config is set and can log a smoke metric locally or to the canonical Space.
 
 If any gate fails, fix the environment, verifier, reward engine, or rollout parser before touching trainer scale.
@@ -46,23 +48,33 @@ Prefer the existing repo modules:
 Default environment values:
 
 ```powershell
-$env:MODEL_NAME = "google/gemma-2-2b-it"
+$env:MODEL_NAME = "unsloth/gemma-4-E2B-it"
 $env:TRACKIO_SPACE_ID = "Humanlearning/CyberSecurity_OWASP-trackio"
 $env:TRACKIO_PROJECT = "CyberSecurity_OWASP"
 $env:DIFFICULTY = "0"
+$env:CYBERSECURITY_OWASP_SCENARIO_CACHE_DIR = "scenario_cache"
+$env:CYBERSECURITY_OWASP_SCENARIO_CACHE_MODE = "fallback"
 ```
 
 Use level-0 debug runs before scaling, and verify them through Modal smoke/ephemeral runs.
 
+Modal uses two persistent cache volumes:
+
+- `CyberSecurity_OWASP-model-cache`: Hugging Face, torch, Unsloth, Triton, and model artifacts.
+- `CyberSecurity_OWASP-scenario-cache`: validated executable scenario bundles for `reset()`.
+
+Scenario/curriculum authoring is config-driven through `configs/scenario_authoring.small.json`. The default offline author model is `deepseek-ai/DeepSeek-V4-Pro`; this is not the RL training policy model. The RL training model is pinned to `unsloth/gemma-4-E2B-it`, matching the Unsloth Gemma 4 E2B RL notebook.
+
 ## Training Workflow
 
-1. Validate the environment first: run the targeted tests that cover models, reset/step/state, rewards, anti-cheat, seed reproducibility, invalid actions, and rollouts.
-2. Run a Modal smoke path for lightweight config/run verification.
-3. Run a frozen-model or dummy-policy rollout on Modal and inspect the action trace, observations, terminal reason, and reward breakdown.
-4. Confirm Trackio receives component metrics and the run name follows `CyberSecurity_OWASP-<model>-<algo>-level<difficulty>-<YYYYMMDD-HHMM>-<git_sha>`.
-5. Start a very small GRPO run only after the above passes. Start via `scripts/modal_train_grpo.py --mode train`.
-6. Evaluate baseline, trained, and held-out splits with `training/eval_before_after.py` and save summaries under `outputs/evals/`.
-7. Save sampled rollouts under `outputs/rollouts/` for baseline, mid-training, trained, and held-out evidence.
+1. Validate the environment first: run the targeted tests that cover models, reset/step/state, rewards, anti-cheat, seed reproducibility, invalid actions, rollouts, config, and scenario cache.
+2. Prepare the scenario cache once per generator/verifier version: `scripts/modal_train_grpo.py --mode prepare-cache` or `scripts/modal_ephemeral_train.py --mode prepare-cache`.
+3. Run the CPU-only Modal scenario-cache preflight before any GPU training. If cache hit rate or coverage is below config, stop and refill the cache instead of allocating a GPU.
+4. Run a frozen-model or dummy-policy rollout on Modal and inspect the action trace, observations, terminal reason, cache metadata, and reward breakdown.
+5. Confirm Trackio receives component metrics and the run name follows `CyberSecurity_OWASP-<model>-<algo>-level<difficulty>-<YYYYMMDD-HHMM>-<git_sha>`.
+6. Start a very small GRPO run only after the above passes. Start via `scripts/modal_train_grpo.py --mode train`.
+7. Evaluate baseline, trained, and held-out splits with `training/eval_before_after.py` and save summaries under `outputs/evals/`.
+8. Save sampled rollouts under `outputs/rollouts/` for baseline, mid-training, trained, and held-out evidence.
 
 ## Reward And Monitoring
 
@@ -71,9 +83,11 @@ Track at least these behavior columns:
 - Reward components: total, discovery, security, regression, public routes, patch quality, visible tests, safety, anti-cheat.
 - Rates: success, exploit-block, regression preservation, public-route preservation, anti-cheat pass, invalid action, timeout, safety violation, reward-hacking suspected.
 - Efficiency: episode length mean/p95, rollouts per second, tokens per second, loss, learning rate, KL, grad norm.
-- Environment timing: reset, step, verifier, reward, scenario compile, error rate, difficulty, seed.
+- Environment timing: reset, step, verifier, reward, scenario cache hit/miss, scenario bundle load, scenario compile fallback, error rate, difficulty, seed.
 
 Stop or roll back if reward rises while sampled traces show deny-all patches, hardcoded users/resources/tenants, fixture/test tampering, repeated invalid actions, public routes being locked, or visible-test-only optimization.
+
+Stop or downgrade to local-dev only if Modal training/eval shows runtime scenario compilation, cache misses in required mode, or cache hit rate below the configured target.
 
 ## TRL, OpenEnv, And Unsloth Guidance
 
@@ -81,7 +95,10 @@ Stop or roll back if reward rises while sampled traces show deny-all patches, ha
 - Keep the existing custom rollout path unless deliberately migrating to TRL's `environment_factory`. If migrating, preserve typed actions, observations, reward component logging, anti-cheat flags, and rollout artifacts.
 - Use Modal as the default training path; local-only vLLM/GRPO execution is intentionally avoided in this repository.
 - For OpenEnv server training concurrency, ensure the server supports enough concurrent sessions for the generation batch.
+- Keep scenario generation out of the rollout hot path. `reset()` should clone cached bundles; any LLM scenario authoring belongs to offline cache prep.
+- GPU training launchers must call the CPU-only scenario-cache preflight before spawning the L4 function, so missing cache coverage fails before GPU allocation.
 - Use Unsloth with LoRA or QLoRA for memory efficiency when the training machine supports it. Start from an instruct-capable checkpoint and verify the model has non-zero success probability before RL.
+- Do not swap the RL model away from `unsloth/gemma-4-E2B-it` for smoke runs. Cost-control should use `--max-steps`, `--dataset-size`, `--max-completion-length`, and cache preflight, not a different model.
 - Pin and smoke-test TRL, Unsloth, vLLM, CUDA, and torch versions before longer runs.
 - Save LoRA adapters or use Unsloth-supported merged save paths. Do not naively upcast a 4-bit model and merge adapters manually.
 

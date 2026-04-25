@@ -21,7 +21,7 @@ class CyberSecurityOWASPAction(Action):
         "search_code",
         "send_local_request",
         "compare_identities",
-        "submit_finding",
+        "submit_diagnosis",
         "patch_file",
         "run_visible_tests",
         "submit_fix",
@@ -62,17 +62,31 @@ class CyberSecurityOWASPState(State):
     scenario_family: str = ""
     template_id: str = "fastapi_basic"
     target_weakness: str = "same_role_cross_object"
+    cache_key: dict[str, Any] = Field(default_factory=dict)
+    scenario_hash: str = ""
+    generator_version: str = ""
+    verifier_version: str = ""
+    cache_hit: bool = False
+    reset_latency_ms: float = 0.0
     phase: CyberSecurityOWASPPhase = "discover"
     max_steps: int = 40
     done: bool = False
     success: bool = False
     failure_reason: str | None = None
     finding_submitted: bool = False
+    diagnosis_submitted: bool = False
     patch_submitted: bool = False
     accumulated_reward: float = 0.0
     last_reward: float = 0.0
     action_history: list[dict[str, Any]] = Field(default_factory=list)
     reward_history: list[dict[str, float]] = Field(default_factory=list)
+    progress_flags: dict[str, bool] = Field(default_factory=dict)
+    progress_reward_total: float = 0.0
+    diagnosis: dict[str, Any] = Field(default_factory=dict)
+    request_trace: list[dict[str, Any]] = Field(default_factory=list)
+    patch_attempt_count: int = 0
+    visible_test_count: int = 0
+    completion_tokens: int = 0
     visible_facts: dict[str, Any] = Field(default_factory=dict)
     hidden_facts: dict[str, Any] = Field(default_factory=dict)
     curriculum_snapshot: dict[str, Any] = Field(default_factory=dict)

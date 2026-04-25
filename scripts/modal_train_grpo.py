@@ -10,7 +10,7 @@ Example:
     uv run --extra modal modal run scripts/modal_train_grpo.py \
         --max-steps 10 \
         --dataset-size 16 \
-        --num-generations 2 \
+        --num-generations 6 \
         --difficulty 0
 """
 
@@ -29,9 +29,11 @@ import modal
 APP_NAME = "CyberSecurity_OWASP-grpo"
 VOLUME_NAME = "CyberSecurity_OWASP-grpo-runs"
 CACHE_VOLUME_NAME = "CyberSecurity_OWASP-model-cache"
+SCENARIO_CACHE_VOLUME_NAME = "CyberSecurity_OWASP-scenario-cache"
 SECRET_NAME = "CyberSecurity_OWASP-secrets"
 RUNS_DIR = pathlib.Path("/runs")
 CACHE_DIR = pathlib.Path("/cache")
+SCENARIO_CACHE_DIR = pathlib.Path("/scenario-cache")
 HF_HOME_DIR = CACHE_DIR / "huggingface"
 HF_HUB_CACHE_DIR = HF_HOME_DIR / "hub"
 TORCH_HOME_DIR = CACHE_DIR / "torch"
@@ -44,6 +46,16 @@ PUBLIC_REPO_URL = "https://github.com/humandotlearning/CyberSecurity_OWASP.git"
 PUBLIC_REPO_BRANCH = "master"
 DEFAULT_GEMMA_MODEL = "unsloth/gemma-4-E2B-it"
 _IMAGE_NOTICE_PRINTED = False
+
+
+def _ensure_gemma4_model(model_name: str) -> str:
+    if model_name != DEFAULT_GEMMA_MODEL:
+        raise ValueError(
+            "CyberSecurity_OWASP GRPO training is pinned to "
+            f"{DEFAULT_GEMMA_MODEL}, matching the Unsloth Gemma 4 E2B RL notebook. "
+            f"Received {model_name!r}."
+        )
+    return model_name
 
 
 def _model_repo_slug(model_name: str) -> str:
@@ -83,6 +95,17 @@ def _configure_modal_cache_env() -> dict[str, str]:
         TRITON_CACHE_DIR,
     }:
         path.mkdir(parents=True, exist_ok=True)
+    return values
+
+
+def _configure_scenario_cache_env(*, required: bool = True) -> dict[str, str]:
+    values = {
+        "CYBERSECURITY_OWASP_SCENARIO_CACHE_DIR": str(SCENARIO_CACHE_DIR),
+        "CYBERSECURITY_OWASP_SCENARIO_CACHE_MODE": "require" if required else "fallback",
+    }
+    for key, value in values.items():
+        os.environ[key] = value
+    SCENARIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     return values
 
 
@@ -134,6 +157,16 @@ def _is_config_mode() -> bool:
     return False
 
 
+def _is_prepare_cache_mode() -> bool:
+    args = sys.argv[1:]
+    for index, arg in enumerate(args):
+        if arg == "--mode" and index + 1 < len(args):
+            return args[index + 1] == "prepare-cache"
+        if arg.startswith("--mode="):
+            return arg.split("=", 1)[1] == "prepare-cache"
+    return False
+
+
 _load_local_env_file()
 
 
@@ -153,7 +186,10 @@ def _source_mode() -> str:
 
 
 def _training_image() -> modal.Image:
-    _print_image_startup_notice()
+    if _is_prepare_cache_mode():
+        return _scenario_cache_image()
+    if not _is_prepare_cache_mode():
+        _print_image_startup_notice()
     image = (
         modal.Image.from_registry(
             "nvidia/cuda:12.8.0-devel-ubuntu22.04",
@@ -225,28 +261,182 @@ def _training_image() -> modal.Image:
     ).workdir(REMOTE_PROJECT)
 
 
+def _scenario_cache_image() -> modal.Image:
+    image = (
+        modal.Image.debian_slim(python_version="3.11")
+        .apt_install("git")
+        .uv_pip_install("openenv-core[core]>=0.2.3", "trackio>=0.25.0")
+    )
+
+    if _source_mode() == "public":
+        repo_url = _cli_arg_value("repo-url", PUBLIC_REPO_URL)
+        repo_branch = _cli_arg_value("repo-branch", PUBLIC_REPO_BRANCH)
+        image = image.run_commands(
+            f"git clone --depth 1 --branch {repo_branch} {repo_url} {REMOTE_PROJECT}",
+            f"python -m pip install --no-deps -e {REMOTE_PROJECT}",
+        )
+    else:
+        image = image.add_local_dir(
+            PROJECT_ROOT,
+            remote_path=REMOTE_PROJECT,
+            copy=True,
+            ignore=[
+                ".git",
+                ".venv",
+                ".env",
+                ".env.*",
+                "__pycache__",
+                ".pytest_cache",
+                "outputs",
+                "*.pyc",
+            ],
+        )
+        image = image.run_commands(
+            f"python -m pip install --no-deps -e {REMOTE_PROJECT}",
+        )
+    return image.workdir(REMOTE_PROJECT)
+
+
 app = modal.App(APP_NAME)
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 cache_volume = modal.Volume.from_name(CACHE_VOLUME_NAME, create_if_missing=True)
+scenario_cache_volume = modal.Volume.from_name(SCENARIO_CACHE_VOLUME_NAME, create_if_missing=True)
 secrets = _modal_secrets()
+scenario_cache_image = _scenario_cache_image()
 training_image = _training_image()
+
+
+@app.function(
+    image=scenario_cache_image,
+    timeout=2 * 60 * 60,
+    volumes={SCENARIO_CACHE_DIR: scenario_cache_volume},
+)
+def prepare_modal_scenario_cache(
+    seed_start: int = 0,
+    difficulty_buckets: int = 0,
+    train_per_bucket: int = 0,
+    validation_per_bucket: int = 0,
+    heldout_per_bucket: int = 0,
+    force: bool = False,
+) -> dict[str, Any]:
+    if difficulty_buckets:
+        os.environ["CYBERSECURITY_OWASP_DIFFICULTY_BUCKETS"] = str(difficulty_buckets)
+    if train_per_bucket:
+        os.environ["CYBERSECURITY_OWASP_TRAIN_SCENARIOS_PER_BUCKET"] = str(train_per_bucket)
+    if validation_per_bucket:
+        os.environ["CYBERSECURITY_OWASP_VALIDATION_SCENARIOS_PER_BUCKET"] = str(validation_per_bucket)
+    if heldout_per_bucket:
+        os.environ["CYBERSECURITY_OWASP_HELDOUT_SCENARIOS_PER_BUCKET"] = str(heldout_per_bucket)
+    _configure_scenario_cache_env(required=False)
+    from CyberSecurity_OWASP.config import load_scenario_authoring_config
+    from CyberSecurity_OWASP.server.scenario_cache import prepare_scenario_cache
+
+    settings = load_scenario_authoring_config()
+    result = prepare_scenario_cache(
+        cache_dir=SCENARIO_CACHE_DIR,
+        settings=settings,
+        seed_start=seed_start,
+        force=force,
+    )
+    scenario_cache_volume.commit()
+    result["scenario_cache_volume"] = SCENARIO_CACHE_VOLUME_NAME
+    return result
+
+
+@app.function(
+    image=scenario_cache_image,
+    timeout=60 * 10,
+    volumes={SCENARIO_CACHE_DIR: scenario_cache_volume},
+)
+def verify_modal_scenario_cache_for_training(
+    split: str = "train",
+    difficulty: int = 0,
+    dataset_size: int = 2,
+    seed_start: int = 0,
+) -> dict[str, Any]:
+    _configure_scenario_cache_env(required=True)
+    scenario_cache_volume.reload()
+
+    from CyberSecurity_OWASP.config import load_scenario_authoring_config
+    from CyberSecurity_OWASP.server.CyberSecurity_OWASP_environment import (
+        CybersecurityOwaspEnvironment,
+    )
+    from CyberSecurity_OWASP.reward_config import compute_token_penalty
+    from CyberSecurity_OWASP.server.curriculum import CurriculumController
+    from CyberSecurity_OWASP.server.scenario_cache import ScenarioCache
+
+    settings = load_scenario_authoring_config()
+    scenario_profile = CurriculumController(settings=settings).select_profile(
+        seed=seed_start,
+        split=split,
+        requested_difficulty=difficulty,
+    )
+    resolved_difficulty = int(scenario_profile["difficulty"])
+    cache = ScenarioCache(SCENARIO_CACHE_DIR, settings=settings)
+    coverage = cache.assert_coverage(split=split, difficulty=resolved_difficulty)
+    available_scenarios = int(
+        coverage.get("counts", {})
+        .get(split, {})
+        .get(str(resolved_difficulty), 0)
+    )
+    if available_scenarios < dataset_size:
+        raise RuntimeError(
+            "Scenario cache does not cover this Modal dataset. Run "
+            "--mode prepare-cache with a larger per-bucket count before training. "
+            f"available={available_scenarios}, requested_dataset_size={dataset_size}, "
+            f"split={split}, difficulty={resolved_difficulty}"
+        )
+
+    env = CybersecurityOwaspEnvironment()
+    try:
+        obs = env.reset(seed=seed_start, split=split, difficulty=difficulty)
+        if not env.state.cache_hit:
+            raise RuntimeError("Scenario cache preflight reset did not hit cache.")
+        if env.state.metrics.get("scenario_compile_latency_ms", 0.0):
+            raise RuntimeError("Scenario cache preflight unexpectedly compiled a scenario.")
+        sample = {
+            "phase": obs.phase,
+            "task_id": env.state.task_id,
+            "cache_hit": env.state.cache_hit,
+            "scenario_hash": env.state.scenario_hash,
+            "reset_latency_ms": env.state.reset_latency_ms,
+            "bundle_load_latency_ms": env.state.metrics.get(
+                "scenario_bundle_load_latency_ms",
+                0.0,
+            ),
+        }
+    finally:
+        env.close()
+
+    return {
+        "scenario_cache_volume": SCENARIO_CACHE_VOLUME_NAME,
+        "scenario_cache_dir": str(SCENARIO_CACHE_DIR),
+        "scenario_cache_mode": "require",
+        "split": split,
+        "difficulty": resolved_difficulty,
+        "dataset_size": dataset_size,
+        "available_scenarios": available_scenarios,
+        "coverage": coverage,
+        "sample_reset": sample,
+    }
 
 
 @app.function(
     image=training_image,
     gpu="L4",
     timeout=4 * 60 * 60,
-    volumes={RUNS_DIR: volume, CACHE_DIR: cache_volume},
+    volumes={RUNS_DIR: volume, CACHE_DIR: cache_volume, SCENARIO_CACHE_DIR: scenario_cache_volume},
     secrets=secrets,
 )
 def check_training_imports() -> dict[str, str]:
     cache_env = _configure_modal_cache_env()
+    scenario_cache_env = _configure_scenario_cache_env(required=False)
 
     import torch
     import trackio
     from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer
-    from unsloth import FastLanguageModel, FastVisionModel
+    from unsloth import FastVisionModel
 
     from CyberSecurity_OWASP.server.CyberSecurity_OWASP_environment import (
         CybersecurityOwaspEnvironment,
@@ -260,12 +450,12 @@ def check_training_imports() -> dict[str, str]:
         "dataset": Dataset.__name__,
         "grpo_config": GRPOConfig.__name__,
         "grpo_trainer": GRPOTrainer.__name__,
-        "unsloth_model": FastLanguageModel.__name__,
         "unsloth_vision_model": FastVisionModel.__name__,
         "env": CybersecurityOwaspEnvironment.__name__,
         "reset_phase": obs.phase,
         "hf_home": cache_env["HF_HOME"],
         "hf_hub_cache": cache_env["HF_HUB_CACHE"],
+        "scenario_cache_dir": scenario_cache_env["CYBERSECURITY_OWASP_SCENARIO_CACHE_DIR"],
     }
 
 
@@ -273,7 +463,7 @@ def check_training_imports() -> dict[str, str]:
     image=training_image,
     gpu="L4",
     timeout=4 * 60 * 60,
-    volumes={RUNS_DIR: volume, CACHE_DIR: cache_volume},
+    volumes={RUNS_DIR: volume, CACHE_DIR: cache_volume, SCENARIO_CACHE_DIR: scenario_cache_volume},
     secrets=secrets,
 )
 def train_cybersecurity_owasp_grpo(
@@ -289,7 +479,7 @@ def train_cybersecurity_owasp_grpo(
     lora_rank: int = 32,
     trackio_space_id: str = "Humanlearning/CyberSecurity_OWASP-trackio",
     trackio_project: str = "CyberSecurity_OWASP-grpo",
-    num_generations: int = 2,
+    num_generations: int = 6,
     seed_start: int = 0,
     git_sha: str = "nogit",
     run_name: str = "",
@@ -303,10 +493,11 @@ def train_cybersecurity_owasp_grpo(
     import threading
     import time
 
+    model_name = _ensure_gemma4_model(model_name)
     cache_env = _configure_modal_cache_env()
 
     import torch
-    from unsloth import FastLanguageModel, FastVisionModel
+    from unsloth import FastVisionModel
     import transformers.utils.hub as transformers_hub
     from datasets import Dataset
     from huggingface_hub import snapshot_download, whoami
@@ -317,9 +508,13 @@ def train_cybersecurity_owasp_grpo(
     import trackio
 
     from CyberSecurity_OWASP.models import CyberSecurityOWASPAction
+    from CyberSecurity_OWASP.config import load_scenario_authoring_config
     from CyberSecurity_OWASP.server.CyberSecurity_OWASP_environment import (
         CybersecurityOwaspEnvironment,
     )
+    from CyberSecurity_OWASP.reward_config import compute_token_penalty
+    from CyberSecurity_OWASP.server.curriculum import CurriculumController
+    from CyberSecurity_OWASP.server.scenario_cache import ScenarioCache
     from training.trackio_utils import (
         aggregate_episode_metrics,
         episode_record_from_state,
@@ -356,6 +551,7 @@ def train_cybersecurity_owasp_grpo(
 
     os.environ["TRACKIO_SPACE_ID"] = trackio_space_id
     os.environ["TRACKIO_PROJECT"] = trackio_project
+    os.environ.setdefault("CYBERSECURITY_OWASP_REWARD_MODE", "dense_train")
 
     model_slug = model_name.replace("/", "-")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -370,13 +566,42 @@ def train_cybersecurity_owasp_grpo(
         print(f"Reloaded Modal model cache volume: {CACHE_VOLUME_NAME}")
     except Exception as exc:
         print(f"Model cache volume reload skipped: {exc!r}")
+    try:
+        scenario_cache_volume.reload()
+        print(f"Reloaded Modal scenario cache volume: {SCENARIO_CACHE_VOLUME_NAME}")
+    except Exception as exc:
+        print(f"Scenario cache volume reload skipped: {exc!r}")
     cache_env = _configure_modal_cache_env()
+    scenario_cache_env = _configure_scenario_cache_env(required=True)
+    scenario_settings = load_scenario_authoring_config()
+    scenario_profile = CurriculumController(settings=scenario_settings).select_profile(
+        seed=seed_start,
+        split=split,
+        requested_difficulty=difficulty,
+    )
+    scenario_cache = ScenarioCache(SCENARIO_CACHE_DIR, settings=scenario_settings)
+    scenario_cache_coverage = scenario_cache.assert_coverage(
+        split=split,
+        difficulty=int(scenario_profile["difficulty"]),
+    )
+    available_scenarios = int(
+        scenario_cache_coverage.get("counts", {})
+        .get(split, {})
+        .get(str(int(scenario_profile["difficulty"])), 0)
+    )
+    if available_scenarios < dataset_size:
+        raise RuntimeError(
+            "Scenario cache does not cover this Modal dataset. Run "
+            "--mode prepare-cache with a larger per-bucket count before training. "
+            f"available={available_scenarios}, requested_dataset_size={dataset_size}, "
+            f"split={split}, difficulty={scenario_profile['difficulty']}"
+        )
 
     training_prompt = (
         "You are a defensive AppSec repair agent in the local CyberSecurity_OWASP "
         "OpenEnv environment. Use only the provided local tools. Do not target real "
         "systems. Work step by step: inspect policy and generated code, reproduce the "
-        "authorization issue locally, submit a policy-tied finding, patch the generated "
+        "authorization issue locally, submit a policy-tied diagnosis, patch the generated "
         "app, run visible tests, then submit the fix. Do not write explanations unless "
         "a tool argument needs evidence text."
     )
@@ -403,6 +628,8 @@ def train_cybersecurity_owasp_grpo(
             "difficulty": state.difficulty,
             "domain": state.domain,
             "bug_family": state.bug_family,
+            "cache_hit": state.cache_hit,
+            "scenario_hash": state.scenario_hash,
             "phase": state.phase,
             "step_count": state.step_count,
             "done": state.done,
@@ -463,7 +690,7 @@ def train_cybersecurity_owasp_grpo(
             obs = self._env.step(action)
             if not obs.last_action_valid:
                 self.invalid_actions += 1
-            self.reward = float(obs.reward_breakdown.get("total", obs.reward or 0.0))
+            self.reward = float(self._env.state.accumulated_reward)
             self.reward_breakdown = dict(obs.reward_breakdown or {})
             self.done = bool(obs.done)
             self.success = bool(self._env.state.success)
@@ -484,6 +711,8 @@ def train_cybersecurity_owasp_grpo(
                     "reward": self.reward,
                     "reward_breakdown": self.reward_breakdown,
                     "invalid_actions": self.invalid_actions,
+                    "scenario_cache_hit": self._env.state.cache_hit,
+                    "scenario_hash": self._env.state.scenario_hash,
                 }
             )
             return obs.message
@@ -575,29 +804,35 @@ def train_cybersecurity_owasp_grpo(
                 },
             )
 
-        def submit_finding(
+        def submit_diagnosis(
             self,
-            summary: str,
-            evidence: str,
-            policy_rule: str,
+            bug_class: str,
+            route: str,
+            violated_policy_rule: str,
+            evidence_trace_ids: list[str],
+            fix_plan: str,
         ) -> str:
             """
-            Submit structured evidence for the suspected authorization bug.
+            Submit structured diagnosis for the suspected authorization bug.
 
             Args:
-                summary: Concise description of the suspected access-control bug.
-                evidence: Local reproduction evidence from policy, code, or requests.
-                policy_rule: Policy rule that the observed behavior violates.
+                bug_class: Short class such as idor_ownership_bug.
+                route: Method and route pattern believed to be vulnerable.
+                violated_policy_rule: Policy rule that the behavior violates.
+                evidence_trace_ids: Request trace IDs from local evidence tools.
+                fix_plan: Concise secure repair plan.
 
             Returns:
-                Finding acceptance result and next phase information.
+                Diagnosis acceptance result and next phase information.
             """
             return self._step(
-                "submit_finding",
+                "submit_diagnosis",
                 {
-                    "summary": summary,
-                    "evidence": evidence,
-                    "policy_rule": policy_rule,
+                    "bug_class": bug_class,
+                    "route": route,
+                    "violated_policy_rule": violated_policy_rule,
+                    "evidence_trace_ids": evidence_trace_ids,
+                    "fix_plan": fix_plan,
                 },
             )
 
@@ -637,8 +872,12 @@ def train_cybersecurity_owasp_grpo(
             """Take no action."""
             return self._step("noop")
 
-        def _score(self) -> float:
-            return float(self.reward)
+        def _score(self, completion_tokens: int = 0) -> float:
+            token_penalty = compute_token_penalty(completion_tokens)
+            self._env.state.completion_tokens = int(completion_tokens)
+            self._env.state.metrics["completion_tokens"] = int(completion_tokens)
+            self._env.state.metrics["token_penalty"] = token_penalty
+            return float(self._env.state.accumulated_reward + token_penalty)
 
         def __del__(self):
             try:
@@ -667,24 +906,31 @@ def train_cybersecurity_owasp_grpo(
         return float(sum(values) / len(values)) if values else 0.0
 
     def cybersecurity_owasp_reward(environments, **kwargs) -> list[float]:
-        rewards = [float(env._score()) for env in environments]
         completions = kwargs.get("completions") or kwargs.get("completion") or []
+        completion_texts = [_completion_to_text(item) for item in completions]
+        completion_tokens = [len(text.split()) for text in completion_texts]
+        rewards = [
+            float(env._score(completion_tokens[index] if index < len(completion_tokens) else 0))
+            for index, env in enumerate(environments)
+        ]
         trace_step["value"] += 1
 
         episode_records = []
-        for env, reward in zip(environments, rewards):
+        for index, (env, reward) in enumerate(zip(environments, rewards)):
             record = episode_record_from_state(
                 env._env.state,
                 run_context={
                     "base_model": model_name,
                     "algo": "grpo",
-                    "reward_version": "reward_v1",
+                    "reward_version": "reward_v2",
                     "env_version": "0.1.0",
                 },
             )
             record.update(
                 {
                     "reward_total": reward,
+                    "reward_token_penalty": float(env._env.state.metrics.get("token_penalty", 0.0)),
+                    "completion_tokens": completion_tokens[index] if index < len(completion_tokens) else 0,
                     "success": bool(getattr(env, "success", False)),
                 }
             )
@@ -761,6 +1007,10 @@ def train_cybersecurity_owasp_grpo(
                 log_trackio_metrics(
                     {
                         "system/model_cache_hit": float(cache_hit),
+                        "system/scenario_cache_required": 1.0,
+                        "system/scenario_cache_entries": float(
+                            scenario_cache_coverage.get("entries", 0)
+                        ),
                         "system/hub_push_enabled": float(push_to_hub),
                     },
                     step=int(state.global_step or 0),
@@ -805,6 +1055,10 @@ def train_cybersecurity_owasp_grpo(
     print(f"Output repo: {output_repo_id}")
     print(f"Run name: {run_name}")
     print(f"Model cache volume: {CACHE_VOLUME_NAME}")
+    print(f"Scenario cache volume: {SCENARIO_CACHE_VOLUME_NAME}")
+    print(f"Scenario cache dir: {scenario_cache_env['CYBERSECURITY_OWASP_SCENARIO_CACHE_DIR']}")
+    print("Scenario cache mode: require")
+    print(f"Scenario cache coverage: {scenario_cache_coverage}")
     print(f"HF_HOME: {cache_env['HF_HOME']}")
     print(f"HF_HUB_CACHE: {cache_env['HF_HUB_CACHE']}")
     print(f"Torch cache: {cache_env['TORCH_HOME']}")
@@ -839,7 +1093,7 @@ def train_cybersecurity_owasp_grpo(
         )
 
     print(f"Loading model with Unsloth from_pretrained: {model_name}")
-    model_api = FastVisionModel if "gemma-4" in model_name.lower() else FastLanguageModel
+    model_api = FastVisionModel
     model, tokenizer = model_api.from_pretrained(
         model_name=model_name,
         max_seq_length=max_seq_length,
@@ -854,34 +1108,11 @@ def train_cybersecurity_owasp_grpo(
     try:
         tokenizer = add_response_schema(tokenizer)
     except Exception as exc:
-        if "gemma-4" in model_name.lower():
-            print(
-                "Tokenizer response schema add skipped for Gemma 4 processor, "
-                "matching the Unsloth Gemma 4 GRPO notebook pattern: "
-                f"{exc!r}"
-            )
-        else:
-            print(f"Tokenizer response schema add failed before cloning: {exc!r}")
-            for template_source in ("Qwen/Qwen3-0.6B", "Qwen/Qwen2.5-0.5B-Instruct"):
-                try:
-                    model, tokenizer, added_tokens = clone_chat_template(
-                        model,
-                        tokenizer,
-                        template_source,
-                    )
-                    print(
-                        "Cloned response-schema-capable chat template "
-                        f"from {template_source}; added {len(added_tokens)} tokens."
-                    )
-                    tokenizer = add_response_schema(tokenizer)
-                    break
-                except Exception as clone_exc:
-                    print(
-                        "Tokenizer response schema fallback failed for "
-                        f"{template_source}: {clone_exc!r}"
-                    )
-            else:
-                raise
+        print(
+            "Tokenizer response schema add skipped for Gemma 4 processor, "
+            "matching the Unsloth Gemma 4 GRPO notebook pattern: "
+            f"{exc!r}"
+        )
 
     model = model_api.get_peft_model(
         model,
@@ -1001,8 +1232,10 @@ def train_cybersecurity_owasp_grpo(
         print("Skipping Hub push for this run. Pass --push-to-hub to upload adapters.")
     volume.commit()
     cache_volume.commit()
+    scenario_cache_volume.commit()
     print(f"Committed run volume: {VOLUME_NAME}")
     print(f"Committed model cache volume: {CACHE_VOLUME_NAME}")
+    print(f"Committed scenario cache volume: {SCENARIO_CACHE_VOLUME_NAME}")
     try:
         trackio.finish()
     except RuntimeError as exc:
@@ -1025,6 +1258,8 @@ def train_cybersecurity_owasp_grpo(
         "repo_url": repo_url,
         "repo_branch": repo_branch,
         "push_to_hub": push_to_hub,
+        "scenario_cache_volume": SCENARIO_CACHE_VOLUME_NAME,
+        "scenario_cache_mode": "require",
     }
 
 
@@ -1043,7 +1278,7 @@ def main(
     lora_rank: int = 32,
     trackio_space_id: str = "Humanlearning/CyberSecurity_OWASP-trackio",
     trackio_project: str = "CyberSecurity_OWASP-grpo",
-    num_generations: int = 2,
+    num_generations: int = 6,
     seed_start: int = 0,
     git_sha: str = "nogit",
     source_mode: str = "local",
@@ -1051,13 +1286,31 @@ def main(
     repo_branch: str = PUBLIC_REPO_BRANCH,
     detach: bool = False,
     push_to_hub: bool = False,
+    cache_seed_start: int = 0,
+    cache_difficulty_buckets: int = 0,
+    cache_train_per_bucket: int = 0,
+    cache_validation_per_bucket: int = 0,
+    cache_heldout_per_bucket: int = 0,
+    cache_force: bool = False,
 ) -> None:
+    model_name = _ensure_gemma4_model(model_name)
+    if mode == "prepare-cache":
+        result = prepare_modal_scenario_cache.remote(
+            seed_start=cache_seed_start,
+            difficulty_buckets=cache_difficulty_buckets,
+            train_per_bucket=cache_train_per_bucket,
+            validation_per_bucket=cache_validation_per_bucket,
+            heldout_per_bucket=cache_heldout_per_bucket,
+            force=cache_force,
+        )
+        print(f"Prepared scenario cache: {result}")
+        return
     if mode == "config":
         result = check_training_imports.remote()
         print(result)
         return
     if mode != "train":
-        raise ValueError("mode must be 'train' or 'config'")
+        raise ValueError("mode must be 'prepare-cache', 'train', or 'config'")
 
     trackio_space_id = trackio_space_id or os.environ.get(
         "TRACKIO_SPACE_ID",
@@ -1123,15 +1376,17 @@ def main(
         )
     print(f"Hub push enabled: {push_to_hub}")
     print(f"Model cache volume: {CACHE_VOLUME_NAME}")
+    print(f"Scenario cache volume: {SCENARIO_CACHE_VOLUME_NAME}")
     print("Launch phases:")
     print(
         "1. Modal image build/validation: happens before remote Python logs; "
         "slow when local source or dependency layers changed."
     )
-    print("2. GPU container start on one L4 and persistent volume reload.")
-    print("3. Model cache check in CyberSecurity_OWASP-model-cache.")
-    print("4. Cached snapshot load into GPU RAM with Unsloth progress.")
-    print("5. One GRPO step, Trackio sync, and volume commit.")
+    print("2. CPU-only scenario cache preflight in CyberSecurity_OWASP-scenario-cache.")
+    print("3. GPU container start on one L4 only after cache preflight passes.")
+    print("4. Model cache check in CyberSecurity_OWASP-model-cache.")
+    print("5. Cached snapshot load into GPU RAM with Unsloth progress.")
+    print("6. GRPO steps, Trackio sync, and volume commit.")
     print(
         "If there is a long pause after trainer.train() starts, watch for "
         "Training heartbeat lines every 30 seconds."
@@ -1159,6 +1414,13 @@ def main(
         repo_branch=repo_branch,
         push_to_hub=push_to_hub,
     )
+    preflight = verify_modal_scenario_cache_for_training.remote(
+        split=split,
+        difficulty=difficulty,
+        dataset_size=dataset_size,
+        seed_start=seed_start,
+    )
+    print(f"CPU scenario cache preflight passed: {preflight}")
     if detach:
         call = train_cybersecurity_owasp_grpo.spawn(**kwargs)
         print(f"Spawned Modal training call: {call.object_id}")

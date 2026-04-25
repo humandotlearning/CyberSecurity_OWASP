@@ -49,6 +49,13 @@ class EpisodeArtifactLogger:
             "regression_result": self._verifier_layer(state, "regression"),
             "reward_breakdown": state.reward_history[-1] if state.reward_history else {},
             "reward_breakdown_by_step": state.reward_history,
+            "total_reward": state.accumulated_reward,
+            "final_reward_breakdown": state.reward_history[-1] if state.reward_history else {},
+            "progress_reward_total": state.progress_reward_total,
+            "completion_tokens": state.completion_tokens,
+            "diagnosis_submitted": state.diagnosis_submitted,
+            "diagnosis": state.diagnosis,
+            "request_trace": state.request_trace,
             "final_status": "resolved" if state.success else "failed",
             "failure_reason": state.failure_reason,
             "safety_violations": [

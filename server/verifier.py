@@ -49,8 +49,9 @@ class MultiLayerVerifier:
             "invalid_action": invalid_action,
             "repeated_action": self._is_repeated_action(state, action),
         }
-        if action.tool_name == "submit_finding":
-            verifier_result["finding"] = verify_finding(state, action.arguments)
+        if action.tool_name == "submit_diagnosis":
+            verifier_result["diagnosis"] = verify_finding(state, action.arguments)
+            verifier_result["finding"] = verifier_result["diagnosis"]
         elif action.tool_name == "run_visible_tests":
             verifier_result["visible"] = run_visible_tests(state)
         elif action.tool_name == "submit_fix":

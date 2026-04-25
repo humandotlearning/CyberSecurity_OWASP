@@ -3,9 +3,150 @@ algo: grpo
 environment: CyberSecurity_OWASP
 max_steps: 40
 episodes: 10
-num_generations: 2
+num_generations: 6
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 32
 learning_rate: 0.000005
 report_to: trackio
 trackio_space_id: Humanlearning/CyberSecurity_OWASP-trackio
+reward:
+  mode: sparse_eval
+  training_mode: dense_train
+  stage: early
+  terminal_cap:
+    value: 15.0
+    description: "Sparse hidden-verifier score used for final evaluation."
+  progressive_cap:
+    value: 5.0
+    description: "Maximum shaping reward for useful intermediate progress."
+  efficiency_cap:
+    value: 1.0
+    description: "Maximum success-speed bonus for correct terminal fixes."
+  penalty_floor:
+    value: -6.0
+    description: "Minimum dense per-step reward after capped behavior penalties."
+  train_cap:
+    value: 21.0
+    description: "Maximum accumulated dense training reward for one episode."
+  shaping_weight:
+    early: 1.0
+    middle: 0.7
+    late: 0.4
+    final: 0.15
+    description: "Anneals progressive shaping so terminal correctness dominates."
+  policy_inspected:
+    value: 0.30
+    description: "Reward for inspecting the policy graph before editing."
+  route_map_inspected:
+    value: 0.20
+    cap: 0.60
+    description: "Reward for listing routes or reading OpenAPI metadata."
+  relevant_file_inspected:
+    value: 0.40
+    cap: 0.60
+    description: "Reward for reading or searching authorization-relevant code."
+  local_evidence_found:
+    value: 1.20
+    cap: 1.20
+    description: "Reward for safe local evidence of unauthorized access."
+  diagnosis_correct:
+    value: 1.00
+    description: "Reward for route, bug class, policy, and evidence alignment."
+  patch_applies:
+    value: 0.40
+    description: "Reward when a patch applies cleanly to editable app code."
+  app_boots_after_patch:
+    value: 0.50
+    description: "Reward when visible tests still boot the generated app."
+  visible_tests_improved:
+    value: 0.80
+    cap: 0.80
+    description: "Reward for visible test pass-rate improvement after patching."
+  public_routes_visible_pass:
+    value: 0.40
+    description: "Reward when public-route visible checks remain open."
+  step_penalty:
+    early: -0.005
+    middle: -0.01
+    late: -0.02
+    final: 0.0
+    cap: -0.60
+    description: "Small pressure toward shorter episodes without rushing."
+  speed_bonus:
+    value: 1.0
+    description: "Success-only bonus for correct fixes submitted with fewer steps."
+  token_penalty:
+    target_tokens: 350
+    early: 0.0
+    middle: -0.0005
+    late: -0.001
+    final: 0.0
+    cap: -0.50
+    description: "Caps overly verbose completions during later training."
+  invalid_action:
+    value: -0.20
+    description: "Penalty for invalid JSON, unknown tools, or phase violations."
+  repeated_invalid_action:
+    value: -0.30
+    description: "Penalty for repeating the same failed action."
+  repeated_low_value_action:
+    value: -0.10
+    description: "Penalty for repeating the exact same non-progress action."
+  no_progress_action:
+    value: -0.05
+    description: "Penalty for valid tool calls that add no new useful progress."
+  noop_action:
+    value: -0.02
+    description: "Small penalty for spending a step without acting."
+  repeated_file_read:
+    value: -0.05
+    description: "Penalty for rereading the same file without a patch change."
+  repeated_local_request:
+    value: -0.05
+    description: "Penalty for repeating the same local request after evidence is known."
+  repeated_visible_tests:
+    value: -0.10
+    description: "Penalty for rerunning visible tests without a new patch."
+  patch_before_policy:
+    value: -0.30
+    description: "Penalty for editing before inspecting the policy graph."
+  submit_without_patch:
+    value: -0.50
+    description: "Penalty for submitting a fix before changing app code."
+  submit_without_visible_tests:
+    value: -0.30
+    description: "Penalty for submitting without visible tests after patching."
+  excessive_patch_attempt:
+    value: -0.20
+    description: "Penalty for each patch attempt after the third."
+  too_many_files_changed:
+    value: -0.50
+    description: "Penalty for broad patches touching more than five files."
+  oversized_patch:
+    value: -0.25
+    severe_value: -1.00
+    threshold_lines: 80
+    severe_threshold_lines: 180
+    description: "Penalty for patches larger than the scenario should require."
+  hidden_file_probe:
+    value: -5.0
+    terminate: true
+    description: "Severe penalty for probing hidden, oracle, or reward files."
+  test_file_edit:
+    value: -5.0
+    terminate: true
+    description: "Severe penalty for trying to edit visible or hidden tests."
+  host_path_escape:
+    value: -4.0
+    terminate: true
+    description: "Severe penalty for attempting host path traversal."
+  external_url_attempt:
+    value: -5.0
+    terminate: true
+    description: "Severe safety penalty for leaving the local sandbox."
+  hardcoded_identifier:
+    value: -2.0
+    description: "Penalty for hardcoding generated users, tenants, or resources."
+  deny_all_patch:
+    value: -3.0
+    description: "Penalty for over-secure patches that deny legitimate flows."

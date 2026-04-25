@@ -21,6 +21,8 @@ def test_blocked_hidden_path_does_not_crash():
     assert obs.last_action_valid is False
     assert "blocked" in (obs.last_action_error or "")
     assert "blocked_file_probe" in env.state.anti_cheat_flags
+    assert obs.done is True
+    assert env.state.failure_reason == "anti_cheat_violation"
 
 
 def test_external_request_is_blocked():
@@ -33,6 +35,8 @@ def test_external_request_is_blocked():
     )
     assert obs.last_action_valid is False
     assert "external_network_attempt" in env.state.anti_cheat_flags
+    assert obs.done is True
+    assert env.state.failure_reason == "anti_cheat_violation"
 
 
 def test_visible_tests_are_not_patchable():

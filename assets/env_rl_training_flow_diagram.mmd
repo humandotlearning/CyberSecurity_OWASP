@@ -1,26 +1,44 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Arial, Helvetica, sans-serif", "primaryTextColor": "#111827", "lineColor": "#0f172a", "clusterBkg": "#ffffff", "clusterBorder": "#cbd5e1"}, "flowchart": {"htmlLabels": false, "curve": "basis", "nodeSpacing": 58, "rankSpacing": 70, "padding": 24}}}%%
 flowchart TD
-    Start["Start run\nselect base model + config"] --> Cache["Prepare scenario splits\ntrain, validation, hidden_eval"]
-    Cache --> Baseline["Baseline evaluation\nscripted/model rollouts"]
+    classDef setup fill:#eff6ff,stroke:#2563eb,stroke-width:2px,color:#111827;
+    classDef episode fill:#ecfdf5,stroke:#059669,stroke-width:2px,color:#111827;
+    classDef train fill:#f5f3ff,stroke:#7c3aed,stroke-width:2px,color:#111827;
+    classDef adapt fill:#fff7ed,stroke:#ea580c,stroke-width:2px,color:#111827;
+    classDef artifact fill:#f1f5f9,stroke:#64748b,stroke-width:2px,color:#111827;
+
+    Start["Start run\nbase model + config"] --> Cache["Prepare cache\ntrain / validation / hidden_eval"]
+    Cache --> Require["Modal cache mode\nrequire"]
+    Require --> Baseline["Baseline eval\nscripted or model rollouts"]
     Baseline --> TrainLoop["GRPO training loop"]
 
-    subgraph Episode["One OpenEnv Episode"]
-        Reset["env.reset(seed)\nnew generated app + policy"] --> Observe["Observation\nphase, hints, available tools"]
-        Observe --> Prompt["Build action prompt\nJSON action only"]
-        Prompt --> Generate["LLM generates action"]
-        Generate --> Step["env.step(action)\nphase gate + execute tool"]
-        Step --> Intermediate{"done?"}
-        Intermediate -- "no" --> Observe
-        Intermediate -- "yes" --> Final["Terminal verifier\nhidden security + regression + anti-cheat"]
+    subgraph Episode["One OpenEnv episode"]
+        direction TB
+        Reset["reset(seed)\nload cached app + policy"] --> Observe["Observation\nphase, hints, tools"]
+        Observe --> Prompt["Build prompt\nJSON action only"]
+        Prompt --> Generate["Model generates\none action"]
+        Generate --> Step["step(action)\nphase gate + tool"]
+        Step --> Done{"done?"}
+        Done -- no --> Observe
+        Done -- yes --> Verify["Terminal verifier\nsecurity + regression + anti-cheat"]
+        Verify --> Rewards["Reward components\ndiscovery, security, regression, safety"]
     end
 
     TrainLoop --> Reset
-    Final --> Rewards["Reward components\ndiscovery, security, regression, public_routes,\npatch_quality, visible_tests, safety, anti_cheat"]
-    Rewards --> Update["GRPO update\nLoRA adapter checkpoint"]
-    Update --> Metrics["Trackio logging\nreward means, pass rates, invalid actions, latency"]
-    Metrics --> Validate{"Validation plateau\nor failure cluster?"}
-    Validate -- "continue" --> TrainLoop
-    Validate -- "adjust curriculum" --> Curriculum["Curriculum controller\nrebalance difficulty and traps"]
+    Rewards --> Update["GRPO update\nLoRA checkpoint"]
+    Update --> Metrics["Trackio logging\nrewards, pass rates, latency"]
+    Metrics --> Decision{"next step?"}
+    Decision -- continue --> TrainLoop
+    Decision -- rebalance --> Curriculum["Curriculum controller\nsampling weights"]
     Curriculum --> TrainLoop
-    Validate -- "final checkpoint" --> Heldout["Held-out eval\nunseen seeds/layouts/domain combos"]
-    Heldout --> Compare["Before/after summary\nsuccess, reward, exploit-block, regression preservation"]
+    Decision -- weak spot --> Refresh["Async cache refresh\nnew validated bundles"]
+    Refresh --> Cache
+    Decision -- final --> Heldout["Held-out eval\nunseen seeds and layouts"]
+    Heldout --> Compare["Before/after summary\nsuccess + reward lift"]
     Compare --> Artifacts["Saved artifacts\noutputs/evals + outputs/rollouts"]
+
+    class Start,Cache,Require,Baseline setup;
+    class Reset,Observe,Prompt,Generate,Step,Done,Verify,Rewards episode;
+    class TrainLoop,Update,Metrics,Heldout,Compare train;
+    class Decision,Curriculum,Refresh adapt;
+    class Artifacts artifact;
+    linkStyle default stroke:#0f172a,stroke-width:2px;

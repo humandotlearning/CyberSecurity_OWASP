@@ -1,0 +1,34 @@
+{
+  "scenario_author": {
+    "provider": "huggingface",
+    "model_id": "deepseek-ai/DeepSeek-V4-Pro",
+    "thinking_mode": "thinking",
+    "reasoning_effort": "high",
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "max_context_tokens": 131072
+  },
+  "curriculum": {
+    "difficulty_bucket_count": 4,
+    "difficulty_labels": ["D0", "D1", "D2", "D3"],
+    "train_scenarios_per_bucket": 25,
+    "validation_scenarios_per_bucket": 10,
+    "heldout_eval_scenarios_per_bucket": 10,
+    "target_cache_hit_rate": 0.95,
+    "target_reset_latency_ms": 200,
+    "scenario_refresh_rate_per_epoch": 0.05,
+    "difficulty_calibration_strategy": "baseline_agent_pass_rate",
+    "pass_rate_thresholds": {
+      "D0": [0.8, 1.0],
+      "D1": [0.6, 0.8],
+      "D2": [0.4, 0.6],
+      "D3": [0.2, 0.4]
+    }
+  },
+  "runtime": {
+    "cache_mode": "fallback",
+    "cache_dir": "scenario_cache",
+    "generator_version": "scenario_generator_v1",
+    "verifier_version": "verifier_v1"
+  }
+}

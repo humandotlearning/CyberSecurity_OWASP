@@ -10,6 +10,7 @@ from .adversarial_designer import BoundedAdversarialDesigner
 from .CyberSecurity_OWASP_environment import CybersecurityOwaspEnvironment
 from .curriculum import CurriculumController
 from .scenario_factory import ScenarioFactory
+from .scenario_cache import ScenarioCache
 from .verifier import MultiLayerVerifier
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "CurriculumController",
     "CybersecurityOwaspEnvironment",
     "MultiLayerVerifier",
+    "ScenarioCache",
     "ScenarioFactory",
 ]

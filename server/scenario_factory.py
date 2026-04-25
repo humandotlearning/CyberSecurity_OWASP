@@ -125,7 +125,7 @@ class ScenarioFactory:
             "curriculum_snapshot": profile,
             "task_brief": (
                 "Inspect the generated invoices app and policy. Find the broken "
-                "authorization behavior, submit a finding with local evidence, patch "
+                "authorization behavior, submit a diagnosis with local evidence, patch "
                 "the app, preserve intended owner/admin/public behavior, then submit."
             ),
             "public_hint": public_hint,

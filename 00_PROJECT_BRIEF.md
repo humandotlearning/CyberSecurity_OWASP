@@ -56,7 +56,7 @@ This environment is useful because it targets a real gap between today’s scann
 - **Scanners detect patterns.** This environment trains policy-aware reasoning.
 - **Unit tests check known cases.** This environment includes hidden authorization invariants.
 - **Static repair can overfit.** This environment forces the model to preserve valid business behavior.
-- **One-app benchmarks are easy to memorize.** This environment compiles many equivalent-but-different apps from policy graphs, templates, route shapes, schema names, and hidden test seeds.
+- **One-app benchmarks are easy to memorize.** This environment prepares and caches many equivalent-but-different apps from policy graphs, templates, route shapes, schema names, and hidden test seeds, then keeps runtime `reset()` deterministic and fast.
 
 The outcome is a model that becomes better at a practical DevSecOps workflow: safely reviewing and repairing authorization logic in small-to-medium web apps.
 
@@ -142,4 +142,3 @@ CyberSecurity_OWASP/
 | OpenEnv build/deploy docs | Defines the required OpenEnv structure: models, server, client, Docker, HF Spaces deployment. | 8.5/10 |
 | Hackathon judging criteria | Aligns deliverables with scoring: innovation, storytelling, reward improvement, and training pipeline. | 9/10 |
 | TRL/OpenEnv GRPO example | Shows a practical pattern for environment rollouts, reward functions, and Trackio logging. | 8/10 |
-

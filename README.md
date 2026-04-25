@@ -18,10 +18,10 @@ tags:
 `CyberSecurity_OWASP` is an OpenEnv-compliant reinforcement-learning environment for a single LLM agent that performs a defensive authorization-repair workflow:
 
 ```text
-inspect generated app + policy -> discover authorization bug -> submit finding -> patch code -> preserve intended behavior
+inspect generated app + policy -> discover authorization bug -> submit diagnosis -> patch code -> preserve intended behavior
 ```
 
-The current implementation includes a functional closed-loop MVP scenario: an invoices FastAPI-style app with one injected OWASP A01 BOLA/IDOR defect, curriculum-aware scenario selection, bounded adversarial targeting, an ephemeral app sandbox, multi-layer deterministic verifier checks, anti-cheat safeguards, JSONL episode artifacts, and decomposed reward.
+The current implementation includes a functional closed-loop MVP scenario: an invoices FastAPI-style app with one injected OWASP A01 BOLA/IDOR defect, config-driven curriculum settings, cache-backed scenario reset, an ephemeral app sandbox, multi-layer deterministic verifier checks, anti-cheat safeguards, JSONL episode artifacts, and decomposed reward.
 
 ## Diagrams
 
@@ -36,6 +36,7 @@ Editable Mermaid sources are available in `assets/architecture_diagram.mmd` and 
 ```bash
 uv sync --extra dev
 uv run --extra dev pytest
+uv run python scripts/generate_scenario_cache.py --train-per-bucket 3 --validation-per-bucket 3 --heldout-per-bucket 3
 uv run server --port 8000
 ```
 
@@ -68,7 +69,7 @@ Supported tools:
 - `search_code`
 - `send_local_request`
 - `compare_identities`
-- `submit_finding`
+- `submit_diagnosis`
 - `patch_file`
 - `run_visible_tests`
 - `submit_fix`
@@ -76,7 +77,7 @@ Supported tools:
 
 Tools are phase-gated:
 
-- `discover`: inspect policy/routes/files, run safe local requests, compare identities, submit finding.
+- `discover`: inspect policy/routes/files, run safe local requests, compare identities, submit diagnosis.
 - `patch`: read/search, patch editable app files, run visible tests, submit final fix.
 - `done`: stable terminal observation only.
 
@@ -94,15 +95,43 @@ Terminal reward uses stable components:
     "visible_tests": 0.0,
     "safety": 0.0,
     "anti_cheat": 0.0,
+    "terminal_total": 0.0,
+    "progressive": 0.0,
+    "step_penalty": 0.0,
+    "speed_bonus": 0.0,
+    "token_penalty": 0.0,
+    "behavior_penalty": 0.0,
+    "train_total": 0.0,
     "total": 0.0,
 }
 ```
 
 The verifier rewards blocking the hidden exploit while preserving legitimate owner/admin behavior and intentionally public routes. Terminal scoring requires visible checks, hidden authorization checks, a policy-oracle matrix, regression checks, public-route preservation, and patch-quality checks. It penalizes deny-all fixes, hardcoded IDs, repeated/invalid action patterns, hidden file probes, external URL attempts, and test/fixture tampering.
 
-## Scenario Generation
+Training can enable dense rewards with `CYBERSECURITY_OWASP_REWARD_MODE=dense_train`.
+Dense mode adds configurable progressive rewards, small efficiency penalties, and capped behavior penalties from `training/configs/grpo_small.yaml`; evaluation defaults to sparse terminal scoring.
 
-`reset(seed)` asks the `CurriculumController` for a difficulty tier and target weakness, then `ScenarioFactory` uses a bounded adversarial designer to compile a fresh isolated workspace under a temp directory. The MVP compiler generates:
+## Scenario Cache And Generation
+
+Scenario generation is an offline/cache-prep concern. `reset(seed)` asks the `CurriculumController` for a difficulty tier and target weakness, then loads a validated executable bundle from the scenario cache when `CYBERSECURITY_OWASP_SCENARIO_CACHE_MODE=require`. Local development defaults to `fallback`, which compiles deterministically on a cache miss.
+
+The scenario/curriculum author is config-driven through `configs/scenario_authoring.small.json`. The default offline author model is `deepseek-ai/DeepSeek-V4-Pro` with Hugging Face provider settings, thinking mode enabled, `temperature=1.0`, and `top_p=1.0`. This model config is for scenario authoring, not the RL policy model.
+
+The cache bundle contract is:
+
+- `scenario.json`
+- `app_source/`
+- `policy_graph.json`
+- `visible_tests.py`
+- `hidden_tests.py`
+- `oracle_tests.py`
+- `expected_exploit_trace.json`
+- `reward_config.json`
+- `metadata.json`
+
+Cache keys include difficulty, authorization bug type, app family, framework, policy shape, tenant model, exploit depth, patch scope, regression risk, generator version, verifier version, and scenario hash.
+
+The MVP compiler currently generates:
 
 - invoices domain policy graph;
 - bounded adversarial target metadata such as same-role cross-object access, cross-tenant access, public-route overlocking traps, alternate route/service reachability, or visible-test-only edge cases;
@@ -118,8 +147,9 @@ Additional domains and bug families are scaffolded for extension.
 The OpenEnv runtime is split into small server modules:
 
 - `server/curriculum.py` tracks mastery, weak spots, reward trend, and difficulty tier.
+- `server/scenario_cache.py` writes and loads validated executable scenario bundles.
 - `server/adversarial_designer.py` chooses safe synthetic scenario targets from tracked weaknesses.
-- `server/scenario_factory.py` compiles the generated app, visible hints, hidden facts, scenario family, and template metadata.
+- `server/scenario_factory.py` compiles the generated app during cache prep or local fallback.
 - `server/app_sandbox.py` handles editable workspace reads, patches, local requests, and OpenAPI summaries.
 - `server/action_tools.py` dispatches typed tools through the sandbox.
 - `server/authz_oracle.py` builds the hidden allowed/denied user-resource-action matrix.
@@ -153,6 +183,16 @@ The training scaffold is intentionally minimal until the environment/verifier be
 Use the Modal launchers in `scripts/modal_train_grpo.py` (persistent) and
 `scripts/modal_ephemeral_train.py` (smoke) for real GRPO runs.
 
+Modal smoke and GRPO runs use `CYBERSECURITY_OWASP_SCENARIO_CACHE_MODE=require` and mount the persistent `CyberSecurity_OWASP-scenario-cache` volume. Prepare that cache before smoke/training:
+
+```bash
+uv run --extra modal modal run scripts/modal_train_grpo.py --mode prepare-cache
+uv run --extra modal modal run scripts/modal_ephemeral_train.py --mode prepare-cache
+```
+
+If the cache slice is missing or below the configured per-bucket minimum, Modal training fails before rollouts rather than compiling scenarios during the run.
+The persistent GRPO launcher runs a CPU-only scenario-cache preflight before it starts the L4 GPU function, so missing cache coverage fails before GPU allocation.
+
 ## Trackio Run Tracking
 
 Trackio is the default tracker for official runs. Set `TRACKIO_SPACE_ID` to log to a hosted Hugging Face Trackio Space; otherwise Trackio records locally.
@@ -184,6 +224,7 @@ uv sync --extra modal
 Run a temporary Modal app for a cheap environment/training smoke check:
 
 ```bash
+uv run --extra modal modal run scripts/modal_ephemeral_train.py --mode prepare-cache
 uv run --extra modal modal run scripts/modal_ephemeral_train.py --mode smoke --episodes 4
 ```
 
@@ -218,10 +259,11 @@ uv run --extra modal modal run scripts/modal_train_grpo.py --mode config
 Run the default smoke GRPO job:
 
 ```bash
+uv run --extra modal modal run scripts/modal_train_grpo.py --mode prepare-cache
 uv run --extra modal modal run scripts/modal_train_grpo.py \
   --max-steps 10 \
   --dataset-size 16 \
-  --num-generations 2 \
+  --num-generations 6 \
   --difficulty 0
 ```
 
@@ -235,7 +277,7 @@ uv run --extra modal modal run scripts/modal_train_grpo.py \
   --repo-branch master \
   --max-steps 10 \
   --dataset-size 16 \
-  --num-generations 2 \
+  --num-generations 6 \
   --difficulty 0
 ```
 
@@ -243,10 +285,11 @@ Defaults are derived from `HF_TOKEN`:
 
 - Trackio Space: `<hf-user>/CyberSecurity_OWASP-trackio`
 - Trackio project: `CyberSecurity_OWASP-grpo`
-- Output repo: `<hf-user>/CyberSecurity_OWASP-gemma-2-2b-grpo-lora`
+- Training model: `unsloth/gemma-4-E2B-it`
+- Output repo: `<hf-user>/CyberSecurity_OWASP-unsloth-gemma-4-e2b-it-grpo-lora`
 
 Override these with `--trackio-space-id`, `--trackio-project`, and
-`--output-repo-id` when needed.
+`--output-repo-id` when needed. The persistent GRPO launcher intentionally rejects non-Gemma model overrides so smoke runs match the Unsloth Gemma 4 E2B RL notebook.
 
 ## Docker / Spaces
 

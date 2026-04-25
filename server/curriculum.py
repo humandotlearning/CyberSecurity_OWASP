@@ -7,12 +7,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 try:
+    from ..config import ScenarioAuthoringSettings, load_scenario_authoring_config
     from ..models import CyberSecurityOWASPState
 except ImportError:  # pragma: no cover
+    from config import ScenarioAuthoringSettings, load_scenario_authoring_config
     from models import CyberSecurityOWASPState
 
 
-DIFFICULTY_TIERS = ("warmup", "beginner", "intermediate", "advanced", "expert")
+DIFFICULTY_TIERS = ("D0", "D1", "D2", "D3")
 WEAKNESS_TARGETS = (
     "same_role_cross_object",
     "cross_tenant_boundary",
@@ -31,6 +33,7 @@ class CurriculumController:
     outcomes_by_target: dict[str, list[bool]] = field(default_factory=lambda: defaultdict(list))
     failures_by_target: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     episodes_seen: int = 0
+    settings: ScenarioAuthoringSettings = field(default_factory=load_scenario_authoring_config)
 
     def select_profile(
         self,
@@ -48,7 +51,7 @@ class CurriculumController:
             )
         return {
             "difficulty": difficulty,
-            "difficulty_tier": DIFFICULTY_TIERS[min(difficulty, len(DIFFICULTY_TIERS) - 1)],
+            "difficulty_tier": self._difficulty_label(difficulty),
             "target_weakness": target,
             "split": split,
             "episodes_seen": self.episodes_seen,
@@ -82,11 +85,12 @@ class CurriculumController:
         }
 
     def _difficulty_for_split(self, split: str, requested_difficulty: int) -> int:
-        difficulty = max(0, min(int(requested_difficulty), len(DIFFICULTY_TIERS) - 1))
+        max_difficulty = self.settings.curriculum.difficulty_bucket_count - 1
+        difficulty = max(0, min(int(requested_difficulty), max_difficulty))
         if split == "hidden_eval":
-            return max(3, difficulty)
+            return max(min(3, max_difficulty), difficulty)
         if self.episodes_seen >= self.window_size and self._recent_reward_mean() > 10.0:
-            return min(difficulty + 1, len(DIFFICULTY_TIERS) - 1)
+            return min(difficulty + 1, max_difficulty)
         return difficulty
 
     def _target_for_seed(self, seed: int, split: str) -> str:
@@ -97,3 +101,7 @@ class CurriculumController:
         if not self.reward_trend:
             return 0.0
         return sum(self.reward_trend) / len(self.reward_trend)
+
+    def _difficulty_label(self, difficulty: int) -> str:
+        labels = self.settings.curriculum.difficulty_labels
+        return labels[min(max(0, difficulty), len(labels) - 1)]

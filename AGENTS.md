@@ -310,7 +310,7 @@ class CyberSecurityOWASPAction(Action):
         "search_code",
         "send_local_request",
         "compare_identities",
-        "submit_finding",
+        "submit_diagnosis",
         "patch_file",
         "run_visible_tests",
         "submit_fix",
@@ -370,7 +370,7 @@ Actions must be explicit, typed, serializable, and constrained. Invalid actions 
 
 | Phase | Allowed tools |
 |---|---|
-| discover | `inspect_policy_graph`, `list_routes`, `read_openapi`, `read_file`, `search_code`, `send_local_request`, `compare_identities`, `submit_finding`, `noop` |
+| discover | `inspect_policy_graph`, `list_routes`, `read_openapi`, `read_file`, `search_code`, `send_local_request`, `compare_identities`, `submit_diagnosis`, `noop` |
 | patch | `read_file`, `search_code`, `patch_file`, `run_visible_tests`, `send_local_request`, `submit_fix`, `noop` |
 | done | no state-changing tools; return stable done observation |
 
@@ -397,7 +397,7 @@ Actions must be explicit, typed, serializable, and constrained. Invalid actions 
 `compare_identities`
 : Runs the same local request as two generated users and summarizes behavioral differences.
 
-`submit_finding`
+`submit_diagnosis`
 : Accepts structured evidence of the suspected authorization bug. Required before patch phase unless curriculum level explicitly allows blind patching.
 
 `patch_file`
@@ -484,7 +484,7 @@ class CyberSecurityOWASPEnvironment(Environment):
 3. Increment step count.
 4. Execute the tool.
 5. Update state/history.
-6. Run verifier if `submit_finding`, `run_visible_tests`, or `submit_fix`.
+6. Run verifier if `submit_diagnosis`, `run_visible_tests`, or `submit_fix`.
 7. Compute reward components.
 8. Check terminal conditions.
 9. Return observation, reward, and done through OpenEnv step result handling.
@@ -805,7 +805,7 @@ grpo_config = GRPOConfig(
     num_train_epochs=1,
     per_device_train_batch_size=1,
     gradient_accumulation_steps=32,
-    num_generations=2,
+    num_generations=6,
     max_prompt_length=4096,
     max_completion_length=768,
     use_vllm=True,

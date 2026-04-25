@@ -22,32 +22,30 @@ Editable source: `assets/architecture_diagram.mmd`
 
 ```mermaid
 flowchart TB
-    subgraph A[Scenario + Curriculum Factory]
-        A1[Policy Graph Generator\nroles, users, tenants, ownership]
-        A2[Curriculum Controller\nmastery, weak spots, difficulty tier]
-        A3[Bounded Adversarial Designer\nsafe local scenario targets]
-        A4[Template Renderer\nFastAPI routes, services, auth helpers]
-        A5[A01 Bug Mutator\nIDOR, tenant, role, public-route traps]
-        A6[ScenarioSpec + Oracle\nvisible hints + hidden policy tuples]
-        A1 --> A3
-        A2 --> A3
-        A3 --> A4 --> A5 --> A6
+    subgraph A[Async Scenario Authoring + Curriculum Factory]
+        A1[Config-guided LLM Scenario Author\nDeepSeek-V4-Pro default]
+        A2[ScenarioSpec JSON\npolicy, app family, bug target]
+        A3[Template + A01 Mutator\nFastAPI code variants]
+        A4[Deterministic Compiler\nexecutable bundle]
+        A5[Static + Dynamic Verifier\nsolvable, safe, hidden/visible tests]
+        A6[Difficulty Calibrator\nbaseline pass-rate buckets]
+        A7[Versioned Scenario Cache\nsplit, difficulty, family, hash]
+        A1 --> A2 --> A3 --> A4 --> A5 --> A6 --> A7
     end
 
-    subgraph B[CyberSecurity_OWASP OpenEnv Server]
-        B1[reset\(seed, difficulty\)\nselect curriculum profile]
-        B2[Episode State Store\nphase, history, metrics, weakness, patch diff]
-        B3[Typed Action Tools\ninspect, request, patch, visible tests]
-        B4[Ephemeral App Sandbox\ncode workspace + fixtures + local API model]
-        B5[Multi-layer Verifier\nvisible, hidden, oracle, regression]
-        B6[Deterministic Reward Engine\nstable components + penalties]
-        B7[Episode Artifact Logger\nJSONL transcript + verifier + diff]
-        B8[state\(\)\nstructured metadata for debugging/eval]
-        B1 --> B2 --> B3
-        B3 <--> B4
-        B4 --> B5 --> B6 --> B2
-        B2 --> B7 --> A2
-        B2 --> B8
+    subgraph B[CyberSecurity_OWASP OpenEnv Runtime]
+        B1[reset\(seed, difficulty, family_budget\)\ncache lookup only]
+        B2[Curriculum Sampler\nvalidated cache slice]
+        B3[Episode State Store\nphase, history, cache metadata, patch diff]
+        B4[Typed Action Tools\ninspect, request, patch, visible tests]
+        B5[Ephemeral App Sandbox\ncloned cached workspace + fixtures]
+        B6[Multi-layer Verifier\nvisible, hidden, oracle, regression]
+        B7[Deterministic Reward Engine\nstable components + penalties]
+        B8[Episode Artifact Logger\nJSONL transcript + verifier + diff]
+        B1 --> B2 --> B3 --> B4
+        B4 <--> B5
+        B5 --> B6 --> B7 --> B3
+        B3 --> B8
     end
 
     subgraph C[Single LLM Agent]
@@ -57,42 +55,63 @@ flowchart TB
         C1 --> C2 --> C3
     end
 
-    subgraph D[Training + Evaluation]
-        D1[Parallel Rollout Loop\nreset → step* → terminal reward]
+    subgraph D[Training + Evaluation + Demo]
+        D1[Parallel Rollouts\nfast cached reset]
         D2[TRL GRPO + LoRA]
-        D3[Trackio Metrics\nreward curves, pass rates, failure modes]
+        D3[Trackio Curves\nreward, pass rates, cache metrics]
         D4[Held-out Family Eval\nbase vs trained model]
         D5[Demo Artifacts\nbefore/after traces + JSONL]
         D1 --> D2 --> D3 --> D4 --> D5
     end
 
-    A6 --> B1
-    C3 -->|typed action| B3
-    B3 -->|observation + reward + done| C1
-    B6 --> D1
+    subgraph E[Feedback / Adaptation Loop]
+        E1[Episode logs + failures]
+        E2[Mastery Model\nweakness and plateau tracking]
+        E3[Cache Sampling Weights\nnew generation queue]
+        E1 --> E2 --> E3
+    end
+
+    A7 --> B1
+    C3 -->|typed action| B4
+    B4 -->|observation + reward + done| C1
+    B7 --> D1
     D2 --> C1
-    B6 --> D4
+    B8 --> E1
+    E3 --> A1
 ```
 
 ## 3. Component responsibilities
 
-### 3.1 Scenario Factory
+### 3.1 Async Scenario Authoring Plane
 
-The scenario factory generates many small but realistic web apps from a structured authorization policy.
+Scenario generation is offline, asynchronous, validated, and cached. Runtime `reset()` must not call an LLM and must not compile a fresh app during Modal smoke, training, or evaluation runs.
 
-It should output:
+The scenario authoring plane outputs complete executable bundles:
 
-- application code;
-- route map;
-- database fixture;
-- user/session/token fixtures;
-- policy graph;
-- intentionally injected access-control bug;
-- public tests visible to the agent;
-- hidden tests invisible to the agent;
-- metadata for eval and debugging.
+- `scenario.json`;
+- `app_source/`;
+- `policy_graph.json`;
+- `visible_tests.py`;
+- `hidden_tests.py`;
+- `oracle_tests.py`;
+- `expected_exploit_trace.json`;
+- `reward_config.json`;
+- `metadata.json`.
 
-The scenario compiler is the main anti-overfitting mechanism. It should vary:
+The default scenario/curriculum author is configured in `configs/scenario_authoring.small.json`:
+
+```yaml
+provider: huggingface
+model_id: deepseek-ai/DeepSeek-V4-Pro
+thinking_mode: thinking
+reasoning_effort: high
+temperature: 1.0
+top_p: 1.0
+```
+
+DeepSeek-V4-Pro is only used for offline scenario/curriculum authoring. It is not the RL policy model unless explicitly selected for training.
+
+The compiler remains the main anti-overfitting mechanism. It should vary:
 
 - route names;
 - schema names;
@@ -105,12 +124,29 @@ The scenario compiler is the main anti-overfitting mechanism. It should vary:
 - visible test coverage;
 - hidden invariant seeds.
 
-The runtime now treats curriculum and adversarial targeting as first-class scenario inputs:
+The runtime treats curriculum and cache sampling as first-class scenario inputs:
 
 - `CurriculumController` tracks target weakness mastery, recent reward trend, failure counts, and difficulty tier.
-- `BoundedAdversarialDesigner` chooses safe synthetic lab targets such as same-role cross-object access, cross-tenant boundaries, public-route overlocking, alternate-service reachability, and visible-test-only traps.
-- `ScenarioFactory` combines the policy graph, curriculum profile, adversarial target, renderer, and hidden oracle metadata into one deterministic scenario spec.
+- Offline cache prep uses the configured LLM author, deterministic compiler, verifier, and baseline-agent difficulty calibrator.
+- `ScenarioCache` stores validated bundles by split, difficulty, family, generator version, verifier version, and scenario hash.
 - Hidden-eval episodes hold out scenario families, not only seeds, by marking evaluation-only scenario-family metadata in state rather than observations.
+
+Cache keys include:
+
+```text
+difficulty_level
+authz_bug_type
+app_family
+framework
+policy_shape
+tenant_model
+exploit_depth
+patch_scope
+regression_risk
+generator_version
+verifier_version
+scenario_hash
+```
 
 ### 3.2 Policy Graph Generator
 
@@ -167,7 +203,7 @@ MVP bug classes:
 
 The OpenEnv server should implement the standard lifecycle:
 
-- `reset()` — initialize a fresh scenario instance.
+- `reset()` — initialize a fresh episode from a cached scenario bundle.
 - `step(action)` — execute one typed action and return observation, reward, and done.
 - `state()` — expose episode metadata for debugging and evaluation.
 
@@ -189,15 +225,19 @@ The agent should interact through typed actions. Keep the interface small enough
 ```python
 @dataclass
 class CyberSecurityOWASPAction(Action):
-    action_type: Literal[
-        "read_file",
-        "list_files",
+    tool_name: Literal[
+        "inspect_policy_graph",
         "list_routes",
-        "inspect_policy",
+        "read_openapi",
+        "read_file",
+        "search_code",
         "send_local_request",
-        "run_public_tests",
-        "apply_patch",
+        "compare_identities",
+        "submit_diagnosis",
+        "patch_file",
+        "run_visible_tests",
         "submit_fix",
+        "noop",
     ]
     arguments: dict
 ```
@@ -206,12 +246,13 @@ Recommended actions:
 
 | Action | Purpose | Safety boundary |
 |---|---|---|
-| `inspect_policy` | Read intended authorization rules. | Only synthetic policy. |
+| `inspect_policy_graph` | Read intended authorization rules. | Only synthetic policy. |
 | `list_routes` | See local app route map. | No internet target. |
 | `read_file` | Inspect selected source file. | Sandbox allowlist only. |
 | `send_local_request` | Validate behavior against local app. | Local generated app only. |
-| `run_public_tests` | Run visible tests. | No hidden test disclosure. |
-| `apply_patch` | Modify source through unified diff. | Patch size and file allowlist limits. |
+| `submit_diagnosis` | Record bug class, route, policy rule, evidence trace IDs, and fix plan. | Does not reveal hidden tests. |
+| `run_visible_tests` | Run visible tests. | No hidden test disclosure. |
+| `patch_file` | Modify source through unified diff or full content. | Patch size and file allowlist limits. |
 | `submit_fix` | End episode and trigger hidden eval. | Final hidden score only, no leaked test details. |
 
 ### 3.6 Observation schema
@@ -263,9 +304,9 @@ class CyberSecurityOWASPState(State):
 ```text
 1. reset()
    - curriculum selects difficulty tier and target weakness
-   - bounded adversarial designer chooses a safe local scenario target
-   - scenario factory compiles app from policy graph + template + injected bug
-   - initialize ephemeral app sandbox and fixture state
+   - runtime samples or directly loads a validated cached bundle
+   - clone cached `app_source/` into an isolated ephemeral workspace
+   - initialize fixture state, cache metadata, and sandbox handles
    - return initial observation
 
 2. agent loop
@@ -290,6 +331,8 @@ class CyberSecurityOWASPState(State):
    - send metrics to Trackio during training/eval
 ```
 
+`CYBERSECURITY_OWASP_SCENARIO_CACHE_MODE=require` is mandatory for Modal smoke, training, and evaluation. In that mode a missing cache bundle is a hard failure. Local development may use `fallback`, which compiles deterministically on a miss, but that path is not allowed for meaningful training.
+
 ## 5. Reward design
 
 The reward should be deterministic, decomposed, and resistant to reward hacking. The maximum terminal reward remains **15.0** and high reward requires deterministic verifier success, not explanation quality.
@@ -306,9 +349,21 @@ Stable reward keys:
     "visible_tests": 0.0,
     "safety": 0.0,
     "anti_cheat": 0.0,
+    "terminal_total": 0.0,
+    "progressive": 0.0,
+    "step_penalty": 0.0,
+    "speed_bonus": 0.0,
+    "token_penalty": 0.0,
+    "behavior_penalty": 0.0,
+    "train_total": 0.0,
     "total": 0.0,
 }
 ```
+
+Sparse evaluation uses `terminal_total` as `total`. Dense training uses
+`terminal_total + shaping_weight * progressive + efficiency - penalties` as `total`,
+with all reward values and short descriptions configured in
+`training/configs/grpo_small.yaml`.
 
 ### Reward components
 
@@ -387,26 +442,28 @@ Editable source: `assets/env_rl_training_flow_diagram.mmd`
 
 ```text
 1. Build CyberSecurity_OWASP OpenEnv server.
-2. Generate 600 MVP scenarios.
-3. Run baseline eval with the base model.
-4. Train with GRPO/TRL or Unsloth using rollout episodes.
-5. Log reward components to Trackio.
+2. Prepare validated scenario cache once per generator/verifier version.
+3. Run baseline eval with cached validation/held-out bundles.
+4. Train with GRPO/TRL or Unsloth using cached rollout episodes.
+5. Log reward components, pass rates, reset latency, and cache hit metrics to Trackio.
 6. Run held-out eval every N training steps.
-7. Inspect failure clusters.
-8. Add scenario mutations only if failures reveal overfitting.
+7. Inspect failure clusters and cache sampling weights.
+8. Refresh only 5-10% of scenarios per epoch when new weak spots are found.
 9. Produce final demo: before/after trace + reward curve + held-out eval table.
 ```
 
 Recommended initial training setup (Modal-first):
 
 ```text
-Model: google/gemma-2-2b-it (or compatible Gemma-class instruct model)
+Model: unsloth/gemma-4-E2B-it
 Algorithm: GRPO via TRL or Unsloth-compatible loop
 Dataset prompt: repeated task instruction with randomized scenario IDs
 Max steps per episode: 30
 Rollouts per prompt: 2-4
 Logging: Trackio
 Primary eval: held-out deterministic test pass rate
+Scenario cache mode: require
+Scenario cache volume: CyberSecurity_OWASP-scenario-cache
 
 Training execution is expected to run on Modal (persistent or ephemeral) rather than locally.
 ```
@@ -501,3 +558,4 @@ Expected endpoints:
 | Hackathon judging criteria | Informs demo priorities: innovation, storytelling, reward improvement, and training pipeline. | 9/10 |
 | TRL/OpenEnv training example | Informs rollout function, decomposed reward functions, and Trackio logging pattern. | 8/10 |
 | Kube SRE Gym README | Informs the closed-loop pattern: adversarial scenario design, curriculum mastery tracking, real tool interaction, verification, and artifact-driven storytelling. | 8/10 |
+| DeepSeek-V4-Pro Hugging Face model card and encoding notes | Informs the default offline scenario-author config and the note that prompt handling should not assume a Jinja chat template. | 8/10 |

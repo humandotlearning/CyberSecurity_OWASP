@@ -1,92 +1,150 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="860" viewBox="0 0 1280 860" role="img" aria-labelledby="title desc">
-  <title id="title">CyberSecurity_OWASP RL training flow diagram</title>
-  <desc id="desc">End-to-end RL training flow for baseline evaluation, OpenEnv rollouts, reward computation, GRPO updates, Trackio logging, curriculum, and held-out evaluation.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="900" viewBox="0 0 1500 900" role="img" aria-labelledby="title desc">
+  <title id="title">CyberSecurity_OWASP cached RL training flow</title>
+  <desc id="desc">Training starts from a validated scenario cache, runs cached OpenEnv episodes, updates a LoRA policy with GRPO, logs metrics to Trackio, adapts sampling weights, and saves evaluation artifacts.</desc>
+  <style>
+    text { font-family: Arial, Helvetica, sans-serif; fill: #111827; }
+    .title { font-size: 32px; font-weight: 700; }
+    .subtitle { font-size: 15px; fill: #475569; }
+    .section-title { font-size: 21px; font-weight: 700; }
+    .box-title { font-size: 16px; font-weight: 700; }
+    .small { font-size: 13px; fill: #334155; }
+    .panel { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 2; rx: 18; }
+    .box { stroke-width: 2; rx: 12; }
+    .blue { fill: #eff6ff; stroke: #2563eb; }
+    .green { fill: #ecfdf5; stroke: #059669; }
+    .purple { fill: #f5f3ff; stroke: #7c3aed; }
+    .orange { fill: #fff7ed; stroke: #ea580c; }
+    .gray { fill: #f1f5f9; stroke: #64748b; }
+    .diamond { stroke-width: 2; }
+    .arrow { stroke: #0f172a; stroke-width: 4; fill: none; marker-end: url(#arrow); stroke-linecap: round; stroke-linejoin: round; }
+    .dash { stroke-dasharray: 10 10; }
+    .label { font-size: 14px; font-weight: 700; fill: #0f172a; paint-order: stroke; stroke: #ffffff; stroke-width: 5; stroke-linejoin: round; }
+  </style>
   <defs>
-    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    <marker id="arrow" markerWidth="18" markerHeight="14" refX="16" refY="7" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L18,7 L0,14 Z" fill="#0f172a" />
     </marker>
-    <style>
-      .bg{fill:#f8fafc}.group{fill:#ffffff;stroke:#cbd5e1;stroke-width:2}.node{fill:#f0f9ff;stroke:#0284c7;stroke-width:2}.episode{fill:#ecfdf5;stroke:#059669;stroke-width:2}.reward{fill:#fff7ed;stroke:#ea580c;stroke-width:2}.eval{fill:#f5f3ff;stroke:#7c3aed;stroke-width:2}.title{font:700 22px Arial, sans-serif;fill:#111827}.groupTitle{font:700 18px Arial, sans-serif;fill:#0f172a}.label{font:700 15px Arial, sans-serif;fill:#111827}.small{font:13px Arial, sans-serif;fill:#374151}.edge{stroke:#334155;stroke-width:2;fill:none;marker-end:url(#arrow)}.dash{stroke:#64748b;stroke-width:2;fill:none;stroke-dasharray:6 5;marker-end:url(#arrow)}
-    </style>
   </defs>
-  <rect class="bg" width="1280" height="860"/>
-  <text class="title" x="40" y="44">CyberSecurity_OWASP Environment RL Training Flow</text>
 
-  <rect class="node" x="70" y="90" width="220" height="72" rx="8"/>
-  <text class="label" x="92" y="119">Start Run</text>
-  <text class="small" x="92" y="142">base model + GRPO config</text>
-  <rect class="node" x="350" y="90" width="220" height="72" rx="8"/>
-  <text class="label" x="372" y="119">Scenario Splits</text>
-  <text class="small" x="372" y="142">train, validation, hidden_eval</text>
-  <rect class="node" x="630" y="90" width="220" height="72" rx="8"/>
-  <text class="label" x="652" y="119">Baseline Eval</text>
-  <text class="small" x="652" y="142">reward + success before RL</text>
-  <rect class="node" x="910" y="90" width="220" height="72" rx="8"/>
-  <text class="label" x="932" y="119">GRPO Loop</text>
-  <text class="small" x="932" y="142">collect rollouts, update LoRA</text>
+  <text x="50" y="52" class="title">CyberSecurity_OWASP Cached RL Training Flow</text>
+  <text x="50" y="80" class="subtitle">Cache-first rollouts keep training deterministic, measurable, and safe from reward hacking shortcuts.</text>
 
-  <rect class="group" x="80" y="220" width="680" height="500" rx="10"/>
-  <text class="groupTitle" x="110" y="255">One OpenEnv Episode</text>
-  <rect class="episode" x="120" y="290" width="210" height="70" rx="8"/>
-  <text class="label" x="142" y="319">env.reset(seed)</text>
-  <text class="small" x="142" y="342">generated app + policy</text>
-  <rect class="episode" x="420" y="290" width="250" height="70" rx="8"/>
-  <text class="label" x="442" y="319">Observation</text>
-  <text class="small" x="442" y="342">phase, hints, available tools</text>
-  <rect class="episode" x="420" y="400" width="250" height="70" rx="8"/>
-  <text class="label" x="442" y="429">Build Prompt</text>
-  <text class="small" x="442" y="452">require one JSON action</text>
-  <rect class="episode" x="120" y="400" width="210" height="70" rx="8"/>
-  <text class="label" x="142" y="429">LLM Action</text>
-  <text class="small" x="142" y="452">typed tool + arguments</text>
-  <rect class="episode" x="120" y="515" width="210" height="70" rx="8"/>
-  <text class="label" x="142" y="544">env.step(action)</text>
-  <text class="small" x="142" y="567">gate, execute, record state</text>
-  <rect class="episode" x="420" y="515" width="250" height="70" rx="8"/>
-  <text class="label" x="442" y="544">Done?</text>
-  <text class="small" x="442" y="567">continue or submit hidden eval</text>
-  <rect class="reward" x="420" y="625" width="250" height="70" rx="8"/>
-  <text class="label" x="442" y="654">Terminal Verifier</text>
-  <text class="small" x="442" y="677">security, regression, anti-cheat</text>
+  <rect x="60" y="125" width="230" height="78" class="box blue" />
+  <text x="175" y="156" text-anchor="middle" class="box-title">Start Run</text>
+  <text x="175" y="178" text-anchor="middle" class="small">base model and config</text>
 
-  <rect class="reward" x="830" y="240" width="350" height="92" rx="8"/>
-  <text class="label" x="860" y="272">Reward Components</text>
-  <text class="small" x="860" y="296">discovery, security, regression, public routes</text>
-  <text class="small" x="860" y="316">patch quality, visible tests, safety, anti-cheat</text>
-  <rect class="reward" x="830" y="375" width="350" height="72" rx="8"/>
-  <text class="label" x="860" y="404">GRPO Update</text>
-  <text class="small" x="860" y="427">optimize LoRA adapter from rollouts</text>
-  <rect class="reward" x="830" y="490" width="350" height="72" rx="8"/>
-  <text class="label" x="860" y="519">Trackio Logging</text>
-  <text class="small" x="860" y="542">reward means, pass rates, invalid actions</text>
-  <rect class="eval" x="830" y="605" width="350" height="72" rx="8"/>
-  <text class="label" x="860" y="634">Validation Decision</text>
-  <text class="small" x="860" y="657">continue, rebalance curriculum, or finalize</text>
+  <rect x="360" y="125" width="250" height="78" class="box blue" />
+  <text x="485" y="156" text-anchor="middle" class="box-title">Prepare Cache</text>
+  <text x="485" y="178" text-anchor="middle" class="small">train, validation, hidden_eval</text>
 
-  <rect class="eval" x="140" y="770" width="250" height="58" rx="8"/>
-  <text class="label" x="162" y="805">Curriculum Rebalance</text>
-  <rect class="eval" x="515" y="770" width="250" height="58" rx="8"/>
-  <text class="label" x="537" y="805">Held-out Eval</text>
-  <rect class="eval" x="890" y="770" width="250" height="58" rx="8"/>
-  <text class="label" x="912" y="805">Saved Artifacts</text>
+  <rect x="680" y="125" width="250" height="78" class="box orange" />
+  <text x="805" y="156" text-anchor="middle" class="box-title">Require Cache Mode</text>
+  <text x="805" y="178" text-anchor="middle" class="small">fail fast on missing bundles</text>
 
-  <path class="edge" d="M290 126 L350 126"/>
-  <path class="edge" d="M570 126 L630 126"/>
-  <path class="edge" d="M850 126 L910 126"/>
-  <path class="edge" d="M1020 162 L545 290"/>
-  <path class="edge" d="M330 325 L420 325"/>
-  <path class="edge" d="M545 360 L545 400"/>
-  <path class="edge" d="M420 435 L330 435"/>
-  <path class="edge" d="M225 470 L225 515"/>
-  <path class="edge" d="M330 550 L420 550"/>
-  <path class="dash" d="M670 550 C735 505 735 375 670 325"/>
-  <path class="edge" d="M545 585 L545 625"/>
-  <path class="edge" d="M670 660 L830 286"/>
-  <path class="edge" d="M1005 332 L1005 375"/>
-  <path class="edge" d="M1005 447 L1005 490"/>
-  <path class="edge" d="M1005 562 L1005 605"/>
-  <path class="dash" d="M830 641 C640 704 370 706 265 770"/>
-  <path class="dash" d="M265 770 C258 645 265 585 420 550"/>
-  <path class="edge" d="M1005 677 L640 770"/>
-  <path class="edge" d="M765 799 L890 799"/>
+  <rect x="1000" y="125" width="230" height="78" class="box blue" />
+  <text x="1115" y="156" text-anchor="middle" class="box-title">Baseline Eval</text>
+  <text x="1115" y="178" text-anchor="middle" class="small">scripted or model rollouts</text>
+
+  <rect x="1290" y="125" width="160" height="78" class="box purple" />
+  <text x="1370" y="156" text-anchor="middle" class="box-title">Train Loop</text>
+  <text x="1370" y="178" text-anchor="middle" class="small">GRPO episodes</text>
+
+  <path d="M290 164 L360 164" class="arrow" />
+  <path d="M610 164 L680 164" class="arrow" />
+  <path d="M930 164 L1000 164" class="arrow" />
+  <path d="M1230 164 L1290 164" class="arrow" />
+
+  <rect x="60" y="270" width="560" height="520" class="panel" />
+  <text x="340" y="310" text-anchor="middle" class="section-title">One OpenEnv Episode</text>
+
+  <rect x="110" y="345" width="210" height="66" class="box green" />
+  <text x="215" y="372" text-anchor="middle" class="box-title">reset(seed)</text>
+  <text x="215" y="393" text-anchor="middle" class="small">cached app and policy</text>
+
+  <rect x="370" y="345" width="200" height="66" class="box green" />
+  <text x="470" y="372" text-anchor="middle" class="box-title">Observe</text>
+  <text x="470" y="393" text-anchor="middle" class="small">phase, hints, tools</text>
+
+  <rect x="110" y="465" width="210" height="66" class="box green" />
+  <text x="215" y="492" text-anchor="middle" class="box-title">Prompt Builder</text>
+  <text x="215" y="513" text-anchor="middle" class="small">JSON action only</text>
+
+  <rect x="370" y="465" width="200" height="66" class="box green" />
+  <text x="470" y="492" text-anchor="middle" class="box-title">Model Action</text>
+  <text x="470" y="513" text-anchor="middle" class="small">one typed payload</text>
+
+  <rect x="110" y="585" width="210" height="66" class="box green" />
+  <text x="215" y="612" text-anchor="middle" class="box-title">step(action)</text>
+  <text x="215" y="633" text-anchor="middle" class="small">phase gate and tool</text>
+
+  <path d="M460 575 L580 618 L460 661 L340 618 Z" class="green diamond" />
+  <text x="460" y="613" text-anchor="middle" class="box-title">done?</text>
+  <text x="460" y="635" text-anchor="middle" class="small">loop or verify</text>
+
+  <rect x="110" y="705" width="210" height="66" class="box green" />
+  <text x="215" y="732" text-anchor="middle" class="box-title">Terminal Verifier</text>
+  <text x="215" y="753" text-anchor="middle" class="small">security and regression</text>
+
+  <rect x="370" y="705" width="200" height="66" class="box green" />
+  <text x="470" y="732" text-anchor="middle" class="box-title">Rewards</text>
+  <text x="470" y="753" text-anchor="middle" class="small">components + penalties</text>
+
+  <path d="M320 378 L370 378" class="arrow" />
+  <path d="M470 411 C470 438 250 438 215 465" class="arrow" />
+  <path d="M320 498 L370 498" class="arrow" />
+  <path d="M370 515 C330 545 265 560 215 585" class="arrow" />
+  <path d="M320 618 L340 618" class="arrow" />
+  <path d="M580 618 C610 575 600 435 470 411" class="arrow dash" />
+  <text x="600" y="540" class="label">no</text>
+  <path d="M425 660 C360 682 260 690 215 705" class="arrow" />
+  <text x="315" y="686" class="label">yes</text>
+  <path d="M320 738 L370 738" class="arrow" />
+
+  <rect x="700" y="270" width="750" height="520" class="panel" />
+  <text x="1075" y="310" text-anchor="middle" class="section-title">Policy Update, Monitoring, and Evaluation</text>
+
+  <rect x="750" y="355" width="230" height="76" class="box purple" />
+  <text x="865" y="385" text-anchor="middle" class="box-title">GRPO Update</text>
+  <text x="865" y="407" text-anchor="middle" class="small">LoRA checkpoint</text>
+
+  <rect x="750" y="485" width="230" height="76" class="box purple" />
+  <text x="865" y="515" text-anchor="middle" class="box-title">Trackio Logging</text>
+  <text x="865" y="537" text-anchor="middle" class="small">reward, rates, latency</text>
+
+  <path d="M1110 475 L1270 523 L1110 571 L950 523 Z" class="orange diamond" />
+  <text x="1110" y="518" text-anchor="middle" class="box-title">Next Step?</text>
+  <text x="1110" y="540" text-anchor="middle" class="small">continue, adjust, final</text>
+
+  <rect x="1210" y="355" width="200" height="76" class="box orange" />
+  <text x="1310" y="385" text-anchor="middle" class="box-title">Curriculum</text>
+  <text x="1310" y="407" text-anchor="middle" class="small">sampling weights</text>
+
+  <rect x="1210" y="615" width="200" height="76" class="box orange" />
+  <text x="1310" y="645" text-anchor="middle" class="box-title">Cache Refresh</text>
+  <text x="1310" y="667" text-anchor="middle" class="small">new validated bundles</text>
+
+  <rect x="750" y="615" width="230" height="76" class="box purple" />
+  <text x="865" y="645" text-anchor="middle" class="box-title">Held-out Eval</text>
+  <text x="865" y="667" text-anchor="middle" class="small">unseen seeds and layouts</text>
+
+  <rect x="1010" y="705" width="220" height="76" class="box gray" />
+  <text x="1120" y="735" text-anchor="middle" class="box-title">Demo Artifacts</text>
+  <text x="1120" y="757" text-anchor="middle" class="small">evals and rollouts</text>
+
+  <path d="M570 738 C635 738 675 393 750 393" class="arrow" />
+  <text x="632" y="586" class="label">terminal reward</text>
+  <path d="M865 431 L865 485" class="arrow" />
+  <path d="M980 523 L950 523" class="arrow" />
+  <path d="M1110 475 C1120 305 1260 250 1370 203" class="arrow dash" />
+  <text x="1160" y="300" class="label">continue</text>
+  <path d="M1220 492 C1250 462 1290 450 1310 431" class="arrow" />
+  <text x="1348" y="478" class="label">rebalance</text>
+  <path d="M1310 355 C1310 285 1345 240 1370 203" class="arrow dash" />
+  <path d="M1220 554 C1280 570 1320 590 1310 615" class="arrow" />
+  <text x="1350" y="572" class="label">weak spot</text>
+  <path d="M1210 653 C970 835 555 830 485 203" class="arrow dash" />
+  <text x="865" y="834" class="label">cache refill</text>
+  <path d="M1000 554 C940 580 895 594 865 615" class="arrow" />
+  <path d="M980 653 C1030 685 1060 700 1120 705" class="arrow" />
+  <text x="1016" y="688" class="label">final</text>
 </svg>

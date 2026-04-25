@@ -72,8 +72,8 @@ def rollout_once(
         action_trace.append(action.model_dump())
         observation_trace.append(observation.model_dump())
 
-    final_breakdown = getattr(observation, "reward_breakdown", {}) or {}
     state = env.state if not callable(getattr(env, "state", None)) else env.state()
+    final_breakdown = getattr(observation, "reward_breakdown", {}) or {}
     verifier = getattr(state, "verification_summary", {}) or {}
     anti_cheat_flags = getattr(state, "anti_cheat_flags", []) or []
     invalid_actions = [
@@ -83,7 +83,20 @@ def rollout_once(
         "prompt_ids": prompt_ids,
         "completion_ids": completion_ids,
         "logprobs": logprobs,
-        "reward_total": float(final_breakdown.get("total", sum(reward_trace))),
+        "reward_total": float(getattr(state, "accumulated_reward", sum(reward_trace))),
+        "reward_terminal_15": float(final_breakdown.get("terminal_total", 0.0)),
+        "reward_progressive_5": float(
+            getattr(state, "progress_reward_total", final_breakdown.get("progressive", 0.0))
+        ),
+        "reward_step_penalty": float(
+            sum((item or {}).get("step_penalty", 0.0) for item in getattr(state, "reward_history", []))
+        ),
+        "reward_speed_bonus": float(
+            sum((item or {}).get("speed_bonus", 0.0) for item in getattr(state, "reward_history", []))
+        ),
+        "reward_behavior_penalty": float(
+            sum((item or {}).get("behavior_penalty", 0.0) for item in getattr(state, "reward_history", []))
+        ),
         "reward_discovery": float(final_breakdown.get("discovery", 0.0)),
         "reward_security": float(final_breakdown.get("security", 0.0)),
         "reward_regression": float(final_breakdown.get("regression", 0.0)),

@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-uv run python -c "from CyberSecurity_OWASP.scenario_compiler import compile_scenario; [compile_scenario(i) for i in range(3)]; print('generated 3 smoke scenarios')"
+uv run python scripts/generate_scenario_cache.py --train-per-bucket 3 --validation-per-bucket 3 --heldout-per-bucket 3

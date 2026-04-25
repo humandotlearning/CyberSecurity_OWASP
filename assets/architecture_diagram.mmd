@@ -1,56 +1,63 @@
-flowchart TB
-    subgraph Factory["Scenario + Curriculum Factory"]
-        Policy["Policy graph generator\nusers, roles, tenants, ownership"]
-        Curriculum["Curriculum controller\nmastery, weak spots, difficulty tier"]
-        Designer["Bounded adversarial designer\nsafe local scenario targets"]
-        Templates["Template renderer\nFastAPI routes, services, auth helpers"]
-        Mutator["A01 bug mutator\nIDOR, tenant, role, public-route traps"]
-        Compiler["ScenarioSpec + oracle\nvisible hints + hidden policy tuples"]
-        Policy --> Designer
-        Curriculum --> Designer
-        Designer --> Templates
-        Templates --> Mutator
-        Mutator --> Compiler
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Arial, Helvetica, sans-serif", "primaryTextColor": "#111827", "lineColor": "#0f172a", "clusterBkg": "#ffffff", "clusterBorder": "#cbd5e1"}, "flowchart": {"htmlLabels": false, "curve": "basis", "nodeSpacing": 60, "rankSpacing": 80, "padding": 24}}}%%
+flowchart LR
+    classDef factory fill:#eff6ff,stroke:#2563eb,stroke-width:2px,color:#111827;
+    classDef runtime fill:#ecfdf5,stroke:#059669,stroke-width:2px,color:#111827;
+    classDef agent fill:#fff7ed,stroke:#ea580c,stroke-width:2px,color:#111827;
+    classDef training fill:#f5f3ff,stroke:#7c3aed,stroke-width:2px,color:#111827;
+    classDef feedback fill:#f1f5f9,stroke:#64748b,stroke-width:2px,color:#111827;
+
+    subgraph Factory["Scenario factory\noffline authoring"]
+        direction TB
+        F1["LLM author\nconfig-driven drafts"] --> F2["ScenarioSpec\npolicy + bug target"]
+        F2 --> F3["A01 mutator\nFastAPI variants + traps"]
+        F3 --> F4["Compiler\nexecutable app bundle"]
+        F4 --> F5["Verifier\nvisible + hidden tests"]
+        F5 --> F6["Versioned cache\nsplit + difficulty + hash"]
     end
 
-    subgraph Runtime["CyberSecurity_OWASP OpenEnv Runtime"]
-        Reset["reset(seed, difficulty)\nselect curriculum profile"]
-        State["Episode state store\nphase, history, metrics, weakness, patch diff"]
-        Tools["Typed action tools\ninspect, request, patch, visible tests"]
-        Sandbox["Ephemeral app sandbox\ncode workspace + fixture DB + local API model"]
-        Verifier["Multi-layer verifier\nvisible, hidden, oracle, regression"]
-        Reward["Deterministic reward engine\ncomponents + penalties"]
-        Logger["Episode artifact logger\nJSONL transcript + verifier + diff"]
-        App["FastAPI / WebSocket server\n/ws, /reset, /step, /state, /web"]
-        Reset --> State
-        State --> Tools
-        Tools <--> Sandbox
-        Sandbox --> Verifier
-        Verifier --> Reward
-        Reward --> State
-        State --> Logger
-        Logger --> Curriculum
-        State --> App
+    subgraph Runtime["OpenEnv runtime\ncache-backed episodes"]
+        direction TB
+        R1["reset(seed)\nload cached bundle"] --> R2["Curriculum sampler\nvalidated slice"]
+        R2 --> R3["Episode state\nphase + history + diff"]
+        R3 --> R4["Typed tools\ninspect, request, patch"]
+        R4 --> R5["App sandbox\ncloned workspace"]
+        R5 --> R6["Verifier\nsecurity + regression"]
+        R6 --> R7["Reward engine\ncomponents + penalties"]
+        R7 --> R3
+        R3 --> R8["API + logger\n/ws, /step, artifacts"]
     end
 
-    subgraph Agent["Single LLM Agent"]
-        Obs["Observation parser"]
-        Reason["AuthZ + code reasoning"]
-        Act["Discover -> Diagnose -> Patch -> Test\none JSON action at a time"]
-        Obs --> Reason --> Act
+    subgraph Agent["Single LLM agent"]
+        direction TB
+        A1["Parse observation"] --> A2["Reason over\npolicy + code"]
+        A2 --> A3["Emit one\nJSON action"]
     end
 
-    subgraph Ops["Training / Evaluation / Demo"]
-        Rollout["Parallel rollout loop\nreset -> step* -> terminal reward"]
-        GRPO["TRL GRPO + LoRA"]
-        Trackio["Trackio reward curves\npass rates and failure modes"]
-        Eval["Held-out family eval\nbase vs trained model"]
-        Artifacts["Demo artifacts\nbefore/after traces + JSONL"]
-        Rollout --> GRPO --> Trackio --> Eval --> Artifacts
+    subgraph Training["Training, eval, demo"]
+        direction TB
+        T1["Parallel rollouts\nfast cached reset"] --> T2["TRL GRPO + LoRA"]
+        T2 --> T3["Trackio metrics\nreward + pass rates"]
+        T3 --> T4["Held-out eval\nbaseline vs trained"]
+        T4 --> T5["Demo artifacts\nrollouts + summaries"]
     end
 
-    Compiler --> Reset
-    App --> Obs
-    Act --> App
-    Reward --> Rollout
-    GRPO --> Agent
+    subgraph Feedback["Feedback loop"]
+        direction LR
+        B1["Episode logs"] --> B2["Failure analysis"]
+        B2 --> B3["Sampling weights\nand new jobs"]
+    end
+
+    F6 == cached bundle ==> R1
+    R8 -- observation --> A1
+    A3 -- JSON action --> R4
+    R7 -- terminal reward --> T1
+    T2 -. adapter checkpoint .-> A2
+    R8 -- episode logs --> B1
+    B3 -. cache refresh .-> F1
+
+    class F1,F2,F3,F4,F5,F6 factory;
+    class R1,R2,R3,R4,R5,R6,R7,R8 runtime;
+    class A1,A2,A3 agent;
+    class T1,T2,T3,T4,T5 training;
+    class B1,B2,B3 feedback;
+    linkStyle default stroke:#0f172a,stroke-width:2px;

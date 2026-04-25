@@ -14,7 +14,7 @@ def test_curriculum_selects_profile_and_tracks_mastery():
     controller = CurriculumController()
     profile = controller.select_profile(seed=3, split="train", requested_difficulty=1)
 
-    assert profile["difficulty_tier"] == "beginner"
+    assert profile["difficulty_tier"] == "D1"
     assert profile["target_weakness"]
     assert "target_mastery" in profile["mastery"]
 
@@ -43,7 +43,7 @@ def test_reset_records_scenario_family_and_partial_observability():
     serialized_hint = json.dumps(obs.visible_policy_hint).lower()
 
     assert env.state.scenario_family.startswith("heldout.")
-    assert env.state.difficulty_tier in {"advanced", "expert"}
+    assert env.state.difficulty_tier == "D3"
     assert "oracle_matrix" not in serialized_hint
     assert "hidden_tests" not in serialized_hint
     assert "injected bug" not in serialized_hint

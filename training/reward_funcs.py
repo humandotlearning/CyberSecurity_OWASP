@@ -23,3 +23,23 @@ def reward_patch_quality(completions, **kwargs):
 
 def reward_anti_cheat(completions, **kwargs):
     return _values("reward_anti_cheat", completions, kwargs)
+
+
+def reward_terminal_15(completions, **kwargs):
+    return _values("reward_terminal_15", completions, kwargs)
+
+
+def reward_progressive_5(completions, **kwargs):
+    return _values("reward_progressive_5", completions, kwargs)
+
+
+def reward_step_penalty(completions, **kwargs):
+    return _values("reward_step_penalty", completions, kwargs)
+
+
+def reward_speed_bonus(completions, **kwargs):
+    return _values("reward_speed_bonus", completions, kwargs)
+
+
+def reward_behavior_penalty(completions, **kwargs):
+    return _values("reward_behavior_penalty", completions, kwargs)

@@ -27,6 +27,13 @@ RUN_SCENARIO_FIELDS = (
 
 REWARD_DECOMPOSITION_FIELDS = (
     "reward/total",
+    "reward/terminal_15",
+    "reward/progressive_5",
+    "reward/step_penalty",
+    "reward/token_penalty",
+    "reward/speed_bonus",
+    "reward/behavior_penalty",
+    "reward/anti_cheat",
     "reward/exploit_reproduced_pre_patch",
     "reward/bug_classification_correct",
     "reward/patch_blocks_submitted_exploit",
@@ -35,6 +42,18 @@ REWARD_DECOMPOSITION_FIELDS = (
     "reward/normal_flow_pass_rate",
     "reward/minimality_score",
     "reward/cheat_penalty",
+)
+
+EPISODE_EFFICIENCY_FIELDS = (
+    "episode/steps_to_submit",
+    "episode/completion_tokens",
+    "episode/tool_calls_total",
+    "episode/read_file_count",
+    "episode/public_test_count",
+    "episode/patch_attempt_count",
+    "episode/submit_without_test_rate",
+    "episode/cheat_attempt_rate",
+    "episode/oversecure_rate",
 )
 
 BEHAVIOR_SKILL_FIELDS = (
@@ -102,6 +121,7 @@ GPU_SYSTEM_METRICS = (
 CANONICAL_TRACKIO_SIGNAL_GROUPS = {
     "run_scenario": RUN_SCENARIO_FIELDS,
     "reward": REWARD_DECOMPOSITION_FIELDS,
+    "episode": EPISODE_EFFICIENCY_FIELDS,
     "skill": BEHAVIOR_SKILL_FIELDS,
     "anti_cheat": ANTI_CHEAT_FIELDS,
     "eval": GENERALIZATION_EVAL_FIELDS,
@@ -175,6 +195,12 @@ TRAIN_METRICS = [
     "train/reward_visible_tests_mean",
     "train/reward_safety_mean",
     "train/reward_anti_cheat_mean",
+    "train/reward_terminal_15_mean",
+    "train/reward_progressive_5_mean",
+    "train/reward_step_penalty_mean",
+    "train/reward_token_penalty_mean",
+    "train/reward_speed_bonus_mean",
+    "train/reward_behavior_penalty_mean",
     "train/success_rate",
     "train/exploit_block_rate",
     "train/regression_preservation_rate",
@@ -278,10 +304,12 @@ def _safe_action(action: Mapping[str, Any]) -> dict[str, Any]:
             safe_args["first_user_id_hash"] = _stable_hash(args["first_user_id"])
         if args.get("second_user_id"):
             safe_args["second_user_id_hash"] = _stable_hash(args["second_user_id"])
-    elif tool_name == "submit_finding":
-        safe_args["summary_length"] = len(str(args.get("summary", "")))
-        safe_args["evidence_length"] = len(str(args.get("evidence", "")))
-        safe_args["policy_rule_length"] = len(str(args.get("policy_rule", "")))
+    elif tool_name == "submit_diagnosis":
+        safe_args["bug_class"] = _redact_text(args.get("bug_class", ""), limit=120)
+        safe_args["route"] = _redact_text(args.get("route", ""), limit=160)
+        safe_args["policy_rule_length"] = len(str(args.get("violated_policy_rule", "")))
+        safe_args["evidence_trace_count"] = len(args.get("evidence_trace_ids", []) or [])
+        safe_args["fix_plan_length"] = len(str(args.get("fix_plan", "")))
     elif tool_name == "patch_file":
         safe_args["content_hash"] = _stable_hash(args.get("content", ""))
         safe_args["diff_hash"] = _stable_hash(args.get("diff", ""))
@@ -488,7 +516,7 @@ def episode_record_from_state(
     record = {
         "run/base_model": context.get("base_model", context.get("run/base_model", "")),
         "run/algo": context.get("algo", context.get("run/algo", "")),
-        "run/reward_version": context.get("reward_version", "reward_v1"),
+        "run/reward_version": context.get("reward_version", "reward_v2"),
         "run/env_version": context.get("env_version", "0.1.0"),
         "episode_id": getattr(state, "episode_id", ""),
         "task_id": getattr(state, "task_id", ""),
@@ -504,12 +532,17 @@ def episode_record_from_state(
         "success": bool(getattr(state, "success", False)),
         "failure_reason": getattr(state, "failure_reason", None),
         "finding_submitted": bool(getattr(state, "finding_submitted", False)),
+        "diagnosis_submitted": bool(getattr(state, "diagnosis_submitted", False)),
         "patch_submitted": bool(getattr(state, "patch_submitted", False)),
         "step_count": int(getattr(state, "step_count", 0) or 0),
         "max_steps": int(getattr(state, "max_steps", 0) or 0),
         "done": bool(getattr(state, "done", False)),
         "anti_cheat_flags": list(getattr(state, "anti_cheat_flags", []) or []),
         "metrics": dict(getattr(state, "metrics", {}) or {}),
+        "completion_tokens": int(getattr(state, "completion_tokens", 0) or 0),
+        "progress_reward_total": float(getattr(state, "progress_reward_total", 0.0) or 0.0),
+        "patch_attempt_count": int(getattr(state, "patch_attempt_count", 0) or 0),
+        "visible_test_count": int(getattr(state, "visible_test_count", 0) or 0),
         "verification_summary": dict(getattr(state, "verification_summary", {}) or {}),
         "patch_diff": str(getattr(state, "patch_diff", "") or ""),
         "reward_history": reward_history,
@@ -562,13 +595,34 @@ def episode_to_tracking_fields(episode: Any) -> dict[str, Any]:
     fields["scenario/seed"] = _float(fields["scenario/seed"])
     fields["scenario/difficulty"] = _float(fields["scenario/difficulty"])
     fields["reward/total"] = _float(record.get("reward_total", final_reward.get("total", 0.0)))
+    fields["reward/terminal_15"] = _float(
+        record.get("reward_terminal_15", final_reward.get("terminal_total", 0.0))
+    )
+    fields["reward/progressive_5"] = _float(
+        record.get("reward_progressive_5", record.get("progress_reward_total", final_reward.get("progressive", 0.0)))
+    )
+    fields["reward/step_penalty"] = _float(
+        record.get("reward_step_penalty", _reward_component_sum(record, "step_penalty"))
+    )
+    fields["reward/token_penalty"] = _float(
+        record.get("reward_token_penalty", _as_dict(record.get("metrics")).get("token_penalty", final_reward.get("token_penalty", 0.0)))
+    )
+    fields["reward/speed_bonus"] = _float(
+        record.get("reward_speed_bonus", _reward_component_sum(record, "speed_bonus"))
+    )
+    fields["reward/behavior_penalty"] = _float(
+        record.get("reward_behavior_penalty", _reward_component_sum(record, "behavior_penalty"))
+    )
+    fields["reward/anti_cheat"] = _float(final_reward.get("anti_cheat", 0.0))
     fields["reward/exploit_reproduced_pre_patch"] = 1.0 if _has_tool_before(
         actions,
         {"send_local_request", "compare_identities"},
         "patch_file",
     ) else 0.0
     fields["reward/bug_classification_correct"] = 1.0 if (
-        record.get("finding_submitted") or _reward_component_sum(record, "discovery") > 0.0
+        record.get("diagnosis_submitted")
+        or record.get("finding_submitted")
+        or _reward_component_sum(record, "discovery") > 0.0
     ) else 0.0
     fields["reward/patch_blocks_submitted_exploit"] = hidden_rate
     fields["reward/hidden_authz_pass_rate"] = hidden_rate
@@ -605,6 +659,21 @@ def episode_to_tracking_fields(episode: Any) -> dict[str, Any]:
     fields["skill/files_modified_count"] = float(len(files_modified))
     fields["skill/security_relevant_edit_ratio"] = _security_relevant_edit_ratio(patch_diff)
     fields["skill/tests_run_count"] = float(tests_run_count)
+    fields["episode/steps_to_submit"] = _first_tool_step(actions, {"submit_fix"}, observations)
+    fields["episode/completion_tokens"] = _float(
+        record.get("completion_tokens", _as_dict(record.get("metrics")).get("completion_tokens", 0.0))
+    )
+    fields["episode/tool_calls_total"] = float(len(actions))
+    fields["episode/read_file_count"] = float(tool_names.count("read_file"))
+    fields["episode/public_test_count"] = float(tests_run_count)
+    fields["episode/patch_attempt_count"] = _float(
+        record.get("patch_attempt_count", tool_names.count("patch_file"))
+    )
+    fields["episode/submit_without_test_rate"] = 1.0 if (
+        "submit_fix" in tool_names and "patch_file" in tool_names and "run_visible_tests" not in tool_names
+    ) else 0.0
+    fields["episode/cheat_attempt_rate"] = 1.0 if anti_flags else 0.0
+    fields["episode/oversecure_rate"] = 1.0 if bool(quality.get("deny_all")) else 0.0
 
     fields["cheat/hidden_file_read_attempt"] = 1.0 if (
         "blocked_file_probe" in anti_flags and "hidden" in path_text
@@ -698,6 +767,12 @@ def train_metric_aliases(metrics: Mapping[str, Any]) -> dict[str, float]:
         "train/reward_visible_tests_mean": _float(metrics.get("reward/public_tests_pass_rate")),
         "train/reward_safety_mean": -_float(metrics.get("reward/cheat_penalty")),
         "train/reward_anti_cheat_mean": -_float(metrics.get("cheat/score")) / 100.0,
+        "train/reward_terminal_15_mean": _float(metrics.get("reward/terminal_15")),
+        "train/reward_progressive_5_mean": _float(metrics.get("reward/progressive_5")),
+        "train/reward_step_penalty_mean": _float(metrics.get("reward/step_penalty")),
+        "train/reward_token_penalty_mean": _float(metrics.get("reward/token_penalty")),
+        "train/reward_speed_bonus_mean": _float(metrics.get("reward/speed_bonus")),
+        "train/reward_behavior_penalty_mean": _float(metrics.get("reward/behavior_penalty")),
         "train/success_rate": _float(metrics.get("skill/patch_success")),
         "train/exploit_block_rate": _float(metrics.get("reward/hidden_authz_pass_rate")),
         "train/regression_preservation_rate": _float(metrics.get("reward/normal_flow_pass_rate")),
@@ -773,7 +848,9 @@ def episode_to_trace_row(episode: Any) -> dict[str, Any]:
                 "first_valid_exploit_step": episode_to_tracking_fields(record)[
                     "skill/first_valid_exploit_step"
                 ],
-                "finding_submitted": bool(record.get("finding_submitted", False)),
+                "diagnosis_submitted": bool(
+                    record.get("diagnosis_submitted", record.get("finding_submitted", False))
+                ),
             },
             sort_keys=True,
         ),
