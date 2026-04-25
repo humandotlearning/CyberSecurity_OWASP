@@ -267,6 +267,46 @@ uv run --extra modal modal run scripts/modal_train_grpo.py \
   --difficulty 0
 ```
 
+For GPU-utilization tuning on the same single L4, start with a larger but still
+bounded no-code trial:
+
+```bash
+uv run --extra modal modal run scripts/modal_train_grpo.py \
+  --max-steps 30 \
+  --dataset-size 64 \
+  --num-generations 8 \
+  --max-completion-length 256 \
+  --difficulty 0
+```
+
+The launcher exposes GRPO throughput knobs for follow-up trials:
+
+```bash
+# larger generation group, no vLLM
+uv run --extra modal modal run scripts/modal_train_grpo.py \
+  --max-steps 30 --dataset-size 64 --num-generations 8 \
+  --max-completion-length 256 --trace-log-every 5
+
+# vLLM colocate on the same L4
+uv run --extra modal modal run scripts/modal_train_grpo.py \
+  --max-steps 30 --dataset-size 64 --num-generations 8 \
+  --max-completion-length 256 --use-vllm \
+  --vllm-gpu-memory-utilization 0.35 --trace-log-every 5
+
+# larger microbatch if the vLLM trial does not OOM
+uv run --extra modal modal run scripts/modal_train_grpo.py \
+  --max-steps 30 --dataset-size 64 --num-generations 8 \
+  --per-device-train-batch-size 2 --gradient-accumulation-steps 4 \
+  --max-completion-length 256 --use-vllm \
+  --vllm-gpu-memory-utilization 0.45 --trace-log-every 5
+```
+
+`per_device_train_batch_size * gradient_accumulation_steps * world_size` must
+be divisible by `num_generations`; the launcher validates this before the GPU
+container starts. Scalar Trackio metrics still log every reward callback, while
+sample trace tables and Trace objects are throttled by `--trace-log-every`
+(`1` restores every-callback logging, `0` disables trace artifacts).
+
 If running from a public repository and you do not want Modal to package the
 local workspace, use public source mode:
 

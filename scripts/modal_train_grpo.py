@@ -1477,6 +1477,7 @@ def main(
     trace_log_every: int = 5,
     seed_start: int = 0,
     git_sha: str = "nogit",
+    run_name: str = "",
     source_mode: str = "local",
     repo_url: str = PUBLIC_REPO_URL,
     repo_branch: str = PUBLIC_REPO_BRANCH,
@@ -1565,7 +1566,7 @@ def main(
 
     model_slug = model_name.replace("/", "-")
     local_stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    run_name = (
+    run_name = run_name or (
         f"CyberSecurity_OWASP-{model_slug}-grpo-level{difficulty}-"
         f"{local_stamp}-{git_sha[:8]}"
     )
