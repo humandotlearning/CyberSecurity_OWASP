@@ -43,6 +43,7 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 PUBLIC_REPO_URL = "https://github.com/humandotlearning/CyberSecurity_OWASP.git"
 PUBLIC_REPO_BRANCH = "master"
 DEFAULT_GEMMA_MODEL = "unsloth/gemma-4-E2B-it"
+_IMAGE_NOTICE_PRINTED = False
 
 
 def _model_repo_slug(model_name: str) -> str:
@@ -83,6 +84,22 @@ def _configure_modal_cache_env() -> dict[str, str]:
     }:
         path.mkdir(parents=True, exist_ok=True)
     return values
+
+
+def _print_image_startup_notice() -> None:
+    global _IMAGE_NOTICE_PRINTED
+    if _IMAGE_NOTICE_PRINTED:
+        return
+    _IMAGE_NOTICE_PRINTED = True
+    print(
+        "Modal startup phase 1/5: building or validating the GPU training image. "
+        "If this takes minutes, it is Modal image packaging/dependency cache work, "
+        "not model-weight download."
+    )
+    print(
+        "Later remote phases will print: cache hit/miss, snapshot_download progress, "
+        "Unsloth weight loading, GRPO heartbeat, Trackio upload, and volume commits."
+    )
 
 
 def _load_local_env_file() -> None:
@@ -136,6 +153,7 @@ def _source_mode() -> str:
 
 
 def _training_image() -> modal.Image:
+    _print_image_startup_notice()
     image = (
         modal.Image.from_registry(
             "nvidia/cuda:12.8.0-devel-ubuntu22.04",
@@ -175,7 +193,7 @@ def _training_image() -> modal.Image:
         repo_branch = _cli_arg_value("repo-branch", PUBLIC_REPO_BRANCH)
         image = image.run_commands(
             f"git clone --depth 1 --branch {repo_branch} {repo_url} {REMOTE_PROJECT}",
-            f"python -m pip install -e {REMOTE_PROJECT}",
+            f"python -m pip install --no-deps -e {REMOTE_PROJECT}",
         )
     else:
         image = image.add_local_dir(
@@ -194,7 +212,7 @@ def _training_image() -> modal.Image:
             ],
         )
         image = image.run_commands(
-            f"python -m pip install -e {REMOTE_PROJECT}",
+            f"python -m pip install --no-deps -e {REMOTE_PROJECT}",
         )
 
     return image.run_commands(
@@ -211,10 +229,11 @@ app = modal.App(APP_NAME)
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 cache_volume = modal.Volume.from_name(CACHE_VOLUME_NAME, create_if_missing=True)
 secrets = _modal_secrets()
+training_image = _training_image()
 
 
 @app.function(
-    image=_training_image(),
+    image=training_image,
     gpu="L4",
     timeout=4 * 60 * 60,
     volumes={RUNS_DIR: volume, CACHE_DIR: cache_volume},
@@ -251,7 +270,7 @@ def check_training_imports() -> dict[str, str]:
 
 
 @app.function(
-    image=_training_image(),
+    image=training_image,
     gpu="L4",
     timeout=4 * 60 * 60,
     volumes={RUNS_DIR: volume, CACHE_DIR: cache_volume},
@@ -281,6 +300,8 @@ def train_cybersecurity_owasp_grpo(
 ) -> dict[str, str | int | float]:
     import inspect
     import statistics
+    import threading
+    import time
 
     cache_env = _configure_modal_cache_env()
 
@@ -737,6 +758,13 @@ def train_cybersecurity_owasp_grpo(
         def on_train_begin(self, args, state, control, **kwargs):
             try:
                 metrics = log_gpu_metrics(step=int(state.global_step or 0))
+                log_trackio_metrics(
+                    {
+                        "system/model_cache_hit": float(cache_hit),
+                        "system/hub_push_enabled": float(push_to_hub),
+                    },
+                    step=int(state.global_step or 0),
+                )
             except Exception as exc:
                 print(f"Trackio GPU metrics initialization skipped: {exc!r}")
                 return control
@@ -783,34 +811,6 @@ def train_cybersecurity_owasp_grpo(
     print(f"Unsloth cache: {cache_env['UNSLOTH_CACHE_DIR']}")
     print(f"Triton cache: {cache_env['TRITON_CACHE_DIR']}")
     print(f"Hub push enabled: {push_to_hub}")
-
-    trackio.init(
-        project=trackio_project,
-        name=run_name,
-        group="grpo",
-        space_id=trackio_space_id,
-        auto_log_gpu=True,
-        gpu_log_interval=10.0,
-        config={
-            "environment": "CyberSecurity_OWASP",
-            "run_type": "modal_grpo",
-            "model_name": model_name,
-            "difficulty": difficulty,
-            "split": split,
-            "dataset_size": dataset_size,
-            "max_steps": max_steps,
-            "num_generations": num_generations,
-            "max_seq_length": max_seq_length,
-            "max_completion_length": max_completion_length,
-            "lora_rank": lora_rank,
-            "gpu_requested": "L4",
-            "load_in_4bit": False,
-            "fast_inference": False,
-            "gradient_checkpointing": "unsloth",
-            "optim": "adamw_8bit",
-        },
-    )
-    log_gpu_metrics(step=0)
 
     expected_model_cache = _hf_model_cache_path(model_name)
     cache_hit = expected_model_cache.exists()
@@ -919,6 +919,7 @@ def train_cybersecurity_owasp_grpo(
         "max_steps": max_steps,
         "save_steps": max(10, max_steps),
         "report_to": "trackio",
+        "project": trackio_project,
         "trackio_space_id": trackio_space_id,
         "run_name": run_name,
         "output_dir": str(output_dir),
@@ -967,7 +968,30 @@ def train_cybersecurity_owasp_grpo(
         }
     )
     print("Starting GRPO trainer.train().")
-    trainer.train()
+    heartbeat_stop = threading.Event()
+
+    def _training_heartbeat() -> None:
+        start_time = time.monotonic()
+        while not heartbeat_stop.wait(30):
+            elapsed = int(time.monotonic() - start_time)
+            print(
+                "Training heartbeat: still inside trainer.train() "
+                f"after {elapsed}s. For this smoke, the slow part is usually "
+                f"Gemma generation/backprop on L4: {num_generations} completions "
+                f"up to {max_completion_length} tokens, plus Trackio upload."
+            )
+
+    heartbeat_thread = threading.Thread(
+        target=_training_heartbeat,
+        name="grpo-training-heartbeat",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+    try:
+        trainer.train()
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=2)
     print("GRPO trainer.train() complete.")
     if push_to_hub:
         print(f"Pushing LoRA adapter to Hugging Face Hub: {output_repo_id}")
@@ -1099,6 +1123,19 @@ def main(
         )
     print(f"Hub push enabled: {push_to_hub}")
     print(f"Model cache volume: {CACHE_VOLUME_NAME}")
+    print("Launch phases:")
+    print(
+        "1. Modal image build/validation: happens before remote Python logs; "
+        "slow when local source or dependency layers changed."
+    )
+    print("2. GPU container start on one L4 and persistent volume reload.")
+    print("3. Model cache check in CyberSecurity_OWASP-model-cache.")
+    print("4. Cached snapshot load into GPU RAM with Unsloth progress.")
+    print("5. One GRPO step, Trackio sync, and volume commit.")
+    print(
+        "If there is a long pause after trainer.train() starts, watch for "
+        "Training heartbeat lines every 30 seconds."
+    )
 
     kwargs = dict(
         env_repo_id=env_repo_id,
