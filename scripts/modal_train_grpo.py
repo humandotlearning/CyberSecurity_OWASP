@@ -71,6 +71,55 @@ def _hf_model_cache_path(model_name: str) -> pathlib.Path:
     return HF_HUB_CACHE_DIR / f"models--{model_name.replace('/', '--')}"
 
 
+def _resolve_grpo_batch_config(
+    *,
+    per_device_train_batch_size: int,
+    gradient_accumulation_steps: int,
+    num_generations: int,
+    world_size: int = 1,
+) -> tuple[int, int]:
+    if num_generations < 1:
+        raise ValueError("--num-generations must be at least 1.")
+    if per_device_train_batch_size < 1:
+        raise ValueError("--per-device-train-batch-size must be at least 1.")
+    if world_size < 1:
+        raise ValueError("world_size must be at least 1.")
+
+    resolved_gradient_accumulation_steps = (
+        gradient_accumulation_steps
+        if gradient_accumulation_steps > 0
+        else max(2, num_generations)
+    )
+    if resolved_gradient_accumulation_steps < 1:
+        raise ValueError("--gradient-accumulation-steps must be at least 1.")
+
+    effective_batch_size = (
+        per_device_train_batch_size
+        * resolved_gradient_accumulation_steps
+        * world_size
+    )
+    if effective_batch_size % num_generations:
+        raise ValueError(
+            "Invalid GRPO batch shape: "
+            "per_device_train_batch_size * gradient_accumulation_steps * world_size "
+            f"must be divisible by num_generations. Got "
+            f"{per_device_train_batch_size} * "
+            f"{resolved_gradient_accumulation_steps} * {world_size} = "
+            f"{effective_batch_size}, which is not divisible by {num_generations}."
+        )
+    return resolved_gradient_accumulation_steps, effective_batch_size
+
+
+def _validate_vllm_config(*, use_vllm: bool, vllm_gpu_memory_utilization: float) -> None:
+    if not use_vllm:
+        return
+    if not 0.0 < vllm_gpu_memory_utilization <= 0.95:
+        raise ValueError(
+            "--vllm-gpu-memory-utilization must be in the interval (0.0, 0.95] "
+            "when --use-vllm is enabled."
+        )
+
+
 def _configure_modal_cache_env() -> dict[str, str]:
     values = {
         "HF_HOME": str(HF_HOME_DIR),
@@ -374,22 +423,20 @@ def verify_modal_scenario_cache_for_training(
     resolved_difficulty = int(scenario_profile["difficulty"])
     cache = ScenarioCache(SCENARIO_CACHE_DIR, settings=settings)
     coverage = cache.assert_coverage(split=split, difficulty=resolved_difficulty)
-    available_scenarios = int(
-        coverage.get("counts", {})
-        .get(split, {})
-        .get(str(resolved_difficulty), 0)
-    )
-    if available_scenarios < dataset_size:
-        raise RuntimeError(
-            "Scenario cache does not cover this Modal dataset. Run "
-            "--mode prepare-cache with a larger per-bucket count before training. "
-            f"available={available_scenarios}, requested_dataset_size={dataset_size}, "
-            f"split={split}, difficulty={resolved_difficulty}"
-        )
+    entries = cache.validated_entries(split=split, difficulty=resolved_difficulty)
+    if not entries:
+        entries = cache.validated_entries(split=split)
+    if not entries:
+        raise RuntimeError(f"No validated scenario cache entries found for split={split!r}.")
+    sample_entry = entries[0]
 
     env = CybersecurityOwaspEnvironment()
     try:
-        obs = env.reset(seed=seed_start, split=split, difficulty=difficulty)
+        obs = env.reset(
+            seed=int(sample_entry["seed"]),
+            split=str(sample_entry["split"]),
+            difficulty=int(sample_entry["difficulty"]),
+        )
         if not env.state.cache_hit:
             raise RuntimeError("Scenario cache preflight reset did not hit cache.")
         if env.state.metrics.get("scenario_compile_latency_ms", 0.0):
@@ -413,9 +460,10 @@ def verify_modal_scenario_cache_for_training(
         "scenario_cache_dir": str(SCENARIO_CACHE_DIR),
         "scenario_cache_mode": "require",
         "split": split,
-        "difficulty": resolved_difficulty,
+        "difficulty": "adaptive",
+        "initial_difficulty": resolved_difficulty,
         "dataset_size": dataset_size,
-        "available_scenarios": available_scenarios,
+        "available_scenarios": len(cache.validated_entries(split=split)),
         "coverage": coverage,
         "sample_reset": sample,
     }
@@ -480,6 +528,11 @@ def train_cybersecurity_owasp_grpo(
     trackio_space_id: str = "Humanlearning/CyberSecurity_OWASP-trackio",
     trackio_project: str = "CyberSecurity_OWASP-grpo",
     num_generations: int = 6,
+    per_device_train_batch_size: int = 1,
+    gradient_accumulation_steps: int = 0,
+    use_vllm: bool = False,
+    vllm_gpu_memory_utilization: float = 0.2,
+    trace_log_every: int = 5,
     seed_start: int = 0,
     git_sha: str = "nogit",
     run_name: str = "",
@@ -495,6 +548,21 @@ def train_cybersecurity_owasp_grpo(
 
     model_name = _ensure_gemma4_model(model_name)
     cache_env = _configure_modal_cache_env()
+    world_size = int(os.environ.get("WORLD_SIZE", "1") or "1")
+    (
+        resolved_gradient_accumulation_steps,
+        effective_train_batch_size,
+    ) = _resolve_grpo_batch_config(
+        per_device_train_batch_size=per_device_train_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        num_generations=num_generations,
+        world_size=world_size,
+    )
+    _validate_vllm_config(
+        use_vllm=use_vllm,
+        vllm_gpu_memory_utilization=vllm_gpu_memory_utilization,
+    )
+    trace_log_every = max(0, int(trace_log_every))
 
     import torch
     from unsloth import FastVisionModel
@@ -523,6 +591,10 @@ def train_cybersecurity_owasp_grpo(
         log_trace_table,
         log_trackio_metrics,
         train_metric_aliases,
+    )
+    from training.grpo_curriculum import (
+        ScenarioGroupRegistry,
+        build_scenario_group_rows,
     )
 
     transformers_hub.TRANSFORMERS_CACHE = cache_env["HF_HUB_CACHE"]
@@ -585,18 +657,14 @@ def train_cybersecurity_owasp_grpo(
         split=split,
         difficulty=int(scenario_profile["difficulty"]),
     )
-    available_scenarios = int(
-        scenario_cache_coverage.get("counts", {})
-        .get(split, {})
-        .get(str(int(scenario_profile["difficulty"])), 0)
+    scenario_entries = scenario_cache.validated_entries(split=split)
+    scenario_registry = ScenarioGroupRegistry(
+        scenario_entries,
+        split=split,
+        initial_difficulty=int(scenario_profile["difficulty"]),
+        rng_seed=seed_start,
+        max_level=scenario_settings.curriculum.difficulty_bucket_count - 1,
     )
-    if available_scenarios < dataset_size:
-        raise RuntimeError(
-            "Scenario cache does not cover this Modal dataset. Run "
-            "--mode prepare-cache with a larger per-bucket count before training. "
-            f"available={available_scenarios}, requested_dataset_size={dataset_size}, "
-            f"split={split}, difficulty={scenario_profile['difficulty']}"
-        )
 
     training_prompt = (
         "You are a defensive AppSec repair agent in the local CyberSecurity_OWASP "
@@ -608,15 +676,14 @@ def train_cybersecurity_owasp_grpo(
     )
 
     dataset = Dataset.from_list(
-        [
-            {
-                "prompt": [{"role": "user", "content": training_prompt}],
-                "seed": seed_start + index,
-                "difficulty": difficulty,
-                "split": split,
-            }
-            for index in range(dataset_size)
-        ]
+        build_scenario_group_rows(
+            dataset_size=dataset_size,
+            training_prompt=training_prompt,
+            seed_start=seed_start,
+            split=split,
+            difficulty=difficulty,
+            difficulty_policy="adaptive",
+        )
     )
 
     def _state_snapshot(env: CybersecurityOwaspEnvironment) -> dict[str, Any]:
@@ -627,8 +694,10 @@ def train_cybersecurity_owasp_grpo(
             "seed": state.seed,
             "split": state.split,
             "difficulty": state.difficulty,
+            "difficulty_tier": state.difficulty_tier,
             "domain": state.domain,
             "bug_family": state.bug_family,
+            "template_id": state.template_id,
             "cache_hit": state.cache_hit,
             "scenario_hash": state.scenario_hash,
             "phase": state.phase,
@@ -647,18 +716,30 @@ def train_cybersecurity_owasp_grpo(
             self.done = False
             self.success = False
             self.invalid_actions = 0
+            self.scenario_group_id = -1
+            self.scenario_assignment: dict[str, Any] = {}
             self.trace_messages: list[dict[str, str]] = []
             self.trace_metadata: dict[str, Any] = {}
 
         def reset(self, **kwargs) -> str:
-            seed = int(kwargs.get("seed", seed_start))
-            current_difficulty = int(kwargs.get("difficulty", difficulty))
-            current_split = str(kwargs.get("split", split))
+            group_id = int(kwargs.get("scenario_group_id", kwargs.get("seed", seed_start)))
+            assignment = scenario_registry.assignment_for(
+                scenario_group_id=group_id,
+                requested_seed=int(kwargs.get("seed", seed_start)),
+                requested_difficulty=int(kwargs.get("difficulty", difficulty)),
+                split=str(kwargs.get("split", split)),
+                difficulty_policy=str(kwargs.get("difficulty_policy", "adaptive")),
+            )
+            seed = int(assignment["seed"])
+            current_difficulty = int(assignment["difficulty"])
+            current_split = str(assignment["split"])
             obs = self._env.reset(
                 seed=seed,
                 split=current_split,
                 difficulty=current_difficulty,
             )
+            self.scenario_group_id = group_id
+            self.scenario_assignment = assignment
             self.reward = 0.0
             self.reward_breakdown = {}
             self.done = bool(obs.done)
@@ -668,18 +749,21 @@ def train_cybersecurity_owasp_grpo(
                 {
                     "role": "user",
                     "content": (
-                        f"{training_prompt}\n\nInitial observation:\n"
-                        f"Phase: {obs.phase}\n"
-                        f"Task: {obs.task_brief}\n"
-                        f"Available actions: {obs.available_actions}\n"
-                        f"Workspace summary: {obs.workspace_summary}\n"
-                        f"Policy hint: {obs.visible_policy_hint}\n"
-                        f"Message: {obs.message}"
+                        f"{training_prompt}\n\n"
+                        f"{obs.scenario_prompt}\n\n"
+                        f"Initial message: {obs.message}"
                     ),
                 }
             ]
             self.trace_metadata = _state_snapshot(self._env)
-            return obs.message
+            self.trace_metadata.update(
+                {
+                    "scenario_group_id": self.scenario_group_id,
+                    "scenario_assignment": dict(self.scenario_assignment),
+                    "scenario_prompt_length": len(obs.scenario_prompt),
+                }
+            )
+            return obs.scenario_prompt
 
         def _step(self, tool_name: str, arguments: dict[str, Any] | None = None) -> str:
             if self.done:
@@ -714,6 +798,8 @@ def train_cybersecurity_owasp_grpo(
                     "invalid_actions": self.invalid_actions,
                     "scenario_cache_hit": self._env.state.cache_hit,
                     "scenario_hash": self._env.state.scenario_hash,
+                    "scenario_group_id": self.scenario_group_id,
+                    "scenario_assignment": dict(self.scenario_assignment),
                 }
             )
             return obs.message
@@ -938,11 +1024,58 @@ def train_cybersecurity_owasp_grpo(
             )
             episode_records.append(record)
 
+        group_successes: dict[int, list[float]] = {}
+        for env in environments:
+            group_id = int(getattr(env, "scenario_group_id", -1))
+            if group_id < 0:
+                continue
+            group_successes.setdefault(group_id, []).append(1.0 if getattr(env, "success", False) else 0.0)
+        for group_id, successes in group_successes.items():
+            scenario_registry.record_group_outcome(group_id, _mean(successes))
+
+        batch_fingerprints = [
+            episode_trace_fingerprint(record)
+            for record in episode_records
+        ]
+        sampled_traces = []
+        seen_this_batch: set[str] = set()
+        duplicate_trace_suppressed_count = 0
+        for index, (env, record, reward, fingerprint) in enumerate(
+            zip(environments, episode_records, rewards, batch_fingerprints)
+        ):
+            if fingerprint in seen_this_batch or fingerprint in logged_trace_fingerprints:
+                duplicate_trace_suppressed_count += 1
+                continue
+            seen_this_batch.add(fingerprint)
+            if len(sampled_traces) < 4:
+                sampled_traces.append((index, env, record, reward, fingerprint))
+
+        should_log_trace_artifacts = trace_log_every > 0 and (
+            trace_step["value"] == 1
+            or trace_step["value"] % trace_log_every == 0
+        )
         canonical_metrics = aggregate_episode_metrics(episode_records)
         metrics = {
             **canonical_metrics,
             **train_metric_aliases(canonical_metrics),
+            **scenario_registry.metrics(
+                episode_records,
+                unique_trace_count=len(set(batch_fingerprints)),
+                duplicate_trace_suppressed_count=duplicate_trace_suppressed_count,
+            ),
         }
+        metrics["train/per_device_train_batch_size"] = float(per_device_train_batch_size)
+        metrics["train/gradient_accumulation_steps"] = float(
+            resolved_gradient_accumulation_steps
+        )
+        metrics["train/effective_train_batch_size"] = float(effective_train_batch_size)
+        metrics["train/num_generations"] = float(num_generations)
+        metrics["train/use_vllm"] = float(bool(use_vllm))
+        metrics["train/vllm_gpu_memory_utilization"] = (
+            float(vllm_gpu_memory_utilization) if use_vllm else 0.0
+        )
+        metrics["train/trace_log_every"] = float(trace_log_every)
+        metrics["train/trace_artifacts_logged"] = float(should_log_trace_artifacts)
         if rewards:
             metrics["train/reward_mean"] = _mean(rewards)
             metrics["train/reward_std"] = statistics.pstdev(rewards) if len(rewards) > 1 else 0.0
@@ -952,60 +1085,57 @@ def train_cybersecurity_owasp_grpo(
         except Exception as exc:
             print(f"Trackio metric logging skipped: {exc!r}")
 
-        sampled_traces = []
-        seen_this_batch: set[str] = set()
-        for index, (env, record, reward) in enumerate(zip(environments, episode_records, rewards)):
-            fingerprint = episode_trace_fingerprint(record)
-            if fingerprint in seen_this_batch or fingerprint in logged_trace_fingerprints:
-                continue
-            seen_this_batch.add(fingerprint)
-            logged_trace_fingerprints.add(fingerprint)
-            sampled_traces.append((index, env, record, reward, fingerprint))
-            if len(sampled_traces) >= 4:
-                break
-
-        try:
-            log_trace_table(
-                [record for _, _, record, _, _ in sampled_traces],
-                table_name="sample_traces",
-                step=trace_step["value"],
-            )
-        except Exception as exc:
-            print(f"Trackio sample trace table logging skipped: {exc!r}")
-
-        for index, env, _record, reward, fingerprint in sampled_traces:
-            messages = list(getattr(env, "trace_messages", []))
-            if index < len(completions):
-                completion_text = _completion_to_text(completions[index])
-                if completion_text:
-                    messages.append(
-                        {
-                            "role": "assistant",
-                            "content": f"Raw generated completion:\n{completion_text}",
-                        }
-                    )
-            metadata = dict(getattr(env, "trace_metadata", {}))
-            metadata.update(
-                {
-                    "sample_index": index,
-                    "reward": reward,
-                    "trace_step": trace_step["value"],
-                    "trace_fingerprint": fingerprint,
-                    "run_name": run_name,
-                }
-            )
+        if should_log_trace_artifacts and sampled_traces:
             try:
-                trackio.log(
-                    {
-                        f"cybersecurity_owasp_trace/sample_{index}": trackio.Trace(
-                            messages=messages,
-                            metadata=metadata,
-                        )
-                    },
+                log_trace_table(
+                    [record for _, _, record, _, _ in sampled_traces],
+                    table_name="sample_traces",
                     step=trace_step["value"],
                 )
             except Exception as exc:
-                print(f"Trackio trace logging skipped: {exc!r}")
+                print(f"Trackio sample trace table logging skipped: {exc!r}")
+
+            for index, env, _record, reward, fingerprint in sampled_traces:
+                logged_trace_fingerprints.add(fingerprint)
+                messages = list(getattr(env, "trace_messages", []))
+                if index < len(completions):
+                    completion_text = _completion_to_text(completions[index])
+                    if completion_text:
+                        messages.append(
+                            {
+                                "role": "assistant",
+                                "content": f"Raw generated completion:\n{completion_text}",
+                            }
+                        )
+                metadata = dict(getattr(env, "trace_metadata", {}))
+                metadata.update(
+                    {
+                        "sample_index": index,
+                        "reward": reward,
+                        "trace_step": trace_step["value"],
+                        "trace_fingerprint": fingerprint,
+                        "num_generations": num_generations,
+                        "run_name": run_name,
+                    }
+                )
+                try:
+                    trackio.log(
+                        {
+                            f"cybersecurity_owasp_trace/sample_{index}": trackio.Trace(
+                                messages=messages,
+                                metadata=metadata,
+                            )
+                        },
+                        step=trace_step["value"],
+                    )
+                except Exception as exc:
+                    print(f"Trackio trace logging skipped: {exc!r}")
+        elif sampled_traces:
+            print(
+                "Trackio trace artifacts throttled at reward callback "
+                f"{trace_step['value']}; set --trace-log-every 1 for every callback "
+                "or 0 to disable trace artifacts."
+            )
 
         if rewards:
             print(
@@ -1080,6 +1210,20 @@ def train_cybersecurity_owasp_grpo(
     print(f"Unsloth cache: {cache_env['UNSLOTH_CACHE_DIR']}")
     print(f"Triton cache: {cache_env['TRITON_CACHE_DIR']}")
     print(f"Hub push enabled: {push_to_hub}")
+    print(
+        "GRPO throughput config: "
+        f"per_device_train_batch_size={per_device_train_batch_size}, "
+        f"gradient_accumulation_steps={resolved_gradient_accumulation_steps}, "
+        f"num_generations={num_generations}, "
+        f"world_size={world_size}, "
+        f"effective_train_batch_size={effective_train_batch_size}"
+    )
+    print(
+        "Generation acceleration config: "
+        f"use_vllm={use_vllm}, "
+        f"vllm_gpu_memory_utilization={vllm_gpu_memory_utilization}, "
+        f"trace_log_every={trace_log_every}"
+    )
 
     expected_model_cache = _hf_model_cache_path(model_name)
     cache_hit = expected_model_cache.exists()
@@ -1109,13 +1253,36 @@ def train_cybersecurity_owasp_grpo(
 
     print(f"Loading model with Unsloth from_pretrained: {model_name}")
     model_api = FastVisionModel
+    model_load_values = {
+        "model_name": model_name,
+        "max_seq_length": max_seq_length,
+        "load_in_4bit": False,
+        "fast_inference": use_vllm,
+        "gpu_memory_utilization": vllm_gpu_memory_utilization if use_vllm else None,
+        "cache_dir": str(HF_HUB_CACHE_DIR),
+        "token": hf_token,
+    }
+    from_pretrained_parameters = inspect.signature(model_api.from_pretrained).parameters
+    from_pretrained_accepts_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in from_pretrained_parameters.values()
+    )
+    skipped_model_load_keys = sorted(
+        key
+        for key, value in model_load_values.items()
+        if value is not None
+        and key not in from_pretrained_parameters
+        and not from_pretrained_accepts_kwargs
+    )
+    if skipped_model_load_keys:
+        print(f"Skipping unsupported from_pretrained keys: {skipped_model_load_keys}")
     model, tokenizer = model_api.from_pretrained(
-        model_name=model_name,
-        max_seq_length=max_seq_length,
-        load_in_4bit=False,
-        fast_inference=False,
-        cache_dir=str(HF_HUB_CACHE_DIR),
-        token=hf_token,
+        **{
+            key: value
+            for key, value in model_load_values.items()
+            if value is not None
+            and (key in from_pretrained_parameters or from_pretrained_accepts_kwargs)
+        }
     )
     print("Model load complete.")
     cache_volume.commit()
@@ -1157,8 +1324,8 @@ def train_cybersecurity_owasp_grpo(
         "lr_scheduler_type": "linear",
         "optim": "adamw_8bit",
         "logging_steps": 1,
-        "per_device_train_batch_size": 1,
-        "gradient_accumulation_steps": max(2, num_generations),
+        "per_device_train_batch_size": per_device_train_batch_size,
+        "gradient_accumulation_steps": resolved_gradient_accumulation_steps,
         "num_generations": num_generations,
         "max_prompt_length": max_seq_length,
         "max_completion_length": max_completion_length,
@@ -1175,11 +1342,14 @@ def train_cybersecurity_owasp_grpo(
         "hub_strategy": "every_save",
         "gradient_checkpointing": True,
         "gradient_checkpointing_kwargs": {"use_reentrant": False},
+        "use_vllm": use_vllm,
+        "vllm_mode": "colocate",
+        "vllm_gpu_memory_utilization": vllm_gpu_memory_utilization,
         "epsilon": 0.2,
         "epsilon_high": 0.28,
         "delta": 1.5,
         "loss_type": "bnpo",
-        "mask_truncated_completions": True,
+        "mask_truncated_completions": False,
     }
     grpo_config_parameters = set(inspect.signature(GRPOConfig).parameters)
     skipped_config_keys = sorted(set(grpo_config_values) - grpo_config_parameters)
@@ -1269,6 +1439,12 @@ def train_cybersecurity_owasp_grpo(
         "model_name": model_name,
         "max_completion_length": max_completion_length,
         "num_generations": num_generations,
+        "per_device_train_batch_size": per_device_train_batch_size,
+        "gradient_accumulation_steps": resolved_gradient_accumulation_steps,
+        "effective_train_batch_size": effective_train_batch_size,
+        "use_vllm": int(bool(use_vllm)),
+        "vllm_gpu_memory_utilization": vllm_gpu_memory_utilization,
+        "trace_log_every": trace_log_every,
         "source_mode": source_mode,
         "repo_url": repo_url,
         "repo_branch": repo_branch,
@@ -1294,6 +1470,11 @@ def main(
     trackio_space_id: str = "Humanlearning/CyberSecurity_OWASP-trackio",
     trackio_project: str = "CyberSecurity_OWASP-grpo",
     num_generations: int = 6,
+    per_device_train_batch_size: int = 1,
+    gradient_accumulation_steps: int = 0,
+    use_vllm: bool = False,
+    vllm_gpu_memory_utilization: float = 0.2,
+    trace_log_every: int = 5,
     seed_start: int = 0,
     git_sha: str = "nogit",
     source_mode: str = "local",
@@ -1326,6 +1507,21 @@ def main(
         return
     if mode != "train":
         raise ValueError("mode must be 'prepare-cache', 'train', or 'config'")
+
+    (
+        resolved_gradient_accumulation_steps,
+        effective_train_batch_size,
+    ) = _resolve_grpo_batch_config(
+        per_device_train_batch_size=per_device_train_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        num_generations=num_generations,
+        world_size=1,
+    )
+    _validate_vllm_config(
+        use_vllm=use_vllm,
+        vllm_gpu_memory_utilization=vllm_gpu_memory_utilization,
+    )
+    trace_log_every = max(0, int(trace_log_every))
 
     trackio_space_id = trackio_space_id or os.environ.get(
         "TRACKIO_SPACE_ID",
@@ -1392,6 +1588,19 @@ def main(
     print(f"Hub push enabled: {push_to_hub}")
     print(f"Model cache volume: {CACHE_VOLUME_NAME}")
     print(f"Scenario cache volume: {SCENARIO_CACHE_VOLUME_NAME}")
+    print(
+        "GRPO throughput config: "
+        f"per_device_train_batch_size={per_device_train_batch_size}, "
+        f"gradient_accumulation_steps={resolved_gradient_accumulation_steps}, "
+        f"num_generations={num_generations}, "
+        f"effective_train_batch_size={effective_train_batch_size}"
+    )
+    print(
+        "Generation acceleration config: "
+        f"use_vllm={use_vllm}, "
+        f"vllm_gpu_memory_utilization={vllm_gpu_memory_utilization}, "
+        f"trace_log_every={trace_log_every}"
+    )
     print("Launch phases:")
     print(
         "1. Modal image build/validation: happens before remote Python logs; "
@@ -1421,6 +1630,11 @@ def main(
         trackio_space_id=trackio_space_id,
         trackio_project=trackio_project,
         num_generations=num_generations,
+        per_device_train_batch_size=per_device_train_batch_size,
+        gradient_accumulation_steps=resolved_gradient_accumulation_steps,
+        use_vllm=use_vllm,
+        vllm_gpu_memory_utilization=vllm_gpu_memory_utilization,
+        trace_log_every=trace_log_every,
         seed_start=seed_start,
         git_sha=git_sha,
         run_name=run_name,

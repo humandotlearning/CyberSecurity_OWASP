@@ -49,6 +49,34 @@ def test_reset_records_scenario_family_and_partial_observability():
     assert "injected bug" not in serialized_hint
 
 
+def test_reset_returns_visible_scenario_prompt_without_hidden_identifiers():
+    env = make_env(75)
+    obs = env.reset(seed=75, split="train", difficulty=0)
+    prompt = obs.scenario_prompt
+    hidden = dict(env.state.hidden_facts)
+
+    assert "CyberSecurity_OWASP scenario prompt" in prompt
+    assert "available_actions" in prompt
+    assert str(env.state.seed) in prompt
+    assert env.state.scenario_hash in prompt
+    assert env.state.template_id in prompt
+
+    for key in (
+        "owner_user_id",
+        "intruder_user_id",
+        "admin_user_id",
+        "owner_invoice_id",
+        "other_invoice_id",
+        "foreign_invoice_id",
+        "tenant_a",
+        "tenant_b",
+    ):
+        value = str(hidden.get(key, ""))
+        assert not value or value not in prompt
+    assert "hidden_tests" not in prompt.lower()
+    assert "oracle" not in prompt.lower()
+
+
 def test_authz_oracle_fails_vulnerable_app_and_passes_secure_patch():
     env = make_env(72)
     oracle = AuthzOracle()

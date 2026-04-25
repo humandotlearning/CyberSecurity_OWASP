@@ -38,6 +38,7 @@ class CyberSecurityOWASPObservation(Observation):
     phase: CyberSecurityOWASPPhase = "discover"
     message: str = ""
     task_brief: str = ""
+    scenario_prompt: str = ""
     visible_policy_hint: dict[str, Any] = Field(default_factory=dict)
     workspace_summary: dict[str, Any] = Field(default_factory=dict)
     available_actions: list[str] = Field(default_factory=list)

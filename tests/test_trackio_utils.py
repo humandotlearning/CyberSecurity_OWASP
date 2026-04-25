@@ -102,6 +102,8 @@ def test_trace_fingerprint_ignores_episode_id_but_tracks_action_changes():
         "scenario/split": "train",
         "scenario/difficulty": 0,
         "scenario/bug_type": "bola_idor",
+        "scenario/template_id": "fastapi_basic",
+        "scenario_hash": "scenario-a",
         "action_history": [
             {
                 "tool_name": "read_file",
@@ -113,11 +115,17 @@ def test_trace_fingerprint_ignores_episode_id_but_tracks_action_changes():
     }
     same_trace = dict(base_record)
     same_trace["episode_id"] = "episode-b"
+    token_only_reward_change = dict(base_record)
+    token_only_reward_change["reward_total"] = -0.25
     changed_trace = dict(base_record)
     changed_trace["action_history"] = [
         *base_record["action_history"],
         {"tool_name": "submit_fix", "arguments": {}},
     ]
+    different_scenario = dict(base_record)
+    different_scenario["scenario_hash"] = "scenario-b"
 
     assert episode_trace_fingerprint(base_record) == episode_trace_fingerprint(same_trace)
+    assert episode_trace_fingerprint(base_record) == episode_trace_fingerprint(token_only_reward_change)
     assert episode_trace_fingerprint(base_record) != episode_trace_fingerprint(changed_trace)
+    assert episode_trace_fingerprint(base_record) != episode_trace_fingerprint(different_scenario)

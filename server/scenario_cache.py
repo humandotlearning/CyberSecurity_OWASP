@@ -265,6 +265,29 @@ class ScenarioCache:
             counts[split][difficulty] = counts[split].get(difficulty, 0) + 1
         return {"root": str(self.root), "counts": counts, "entries": len(self._manifest_entries())}
 
+    def validated_entries(
+        self,
+        *,
+        split: str | None = None,
+        difficulty: int | None = None,
+    ) -> list[dict[str, Any]]:
+        entries = [
+            dict(entry)
+            for entry in self._manifest_entries()
+            if entry.get("validated") is True
+            and (split is None or entry.get("split") == split)
+            and (difficulty is None or int(entry.get("difficulty", -1)) == int(difficulty))
+        ]
+        return sorted(
+            entries,
+            key=lambda item: (
+                str(item.get("split", "")),
+                int(item.get("difficulty", 0)),
+                int(item.get("seed", 0)),
+                str(item.get("scenario_hash", "")),
+            ),
+        )
+
     def assert_coverage(self, *, split: str, difficulty: int | None = None) -> dict[str, Any]:
         coverage = self.coverage()
         required = self.settings.curriculum.minimum_for_split(split)
@@ -490,6 +513,8 @@ def _manifest_entry(
         "seed": int(scenario_record.get("seed", 0)),
         "split": str(scenario_record.get("split", "train")),
         "difficulty": int(scenario_record.get("difficulty", 0)),
+        "template_id": str(scenario_record.get("template_id", "")),
+        "bug_family": str(scenario_record.get("bug_family", "")),
         "scenario_hash": str(metadata.get("scenario_hash", "")),
         "cache_key": metadata.get("cache_key", {}),
         "validated": bool(metadata.get("validated", False)),

@@ -150,9 +150,16 @@ REQUIRED_SMOKE_TRACKIO_ITEMS = (
 TRACE_TABLE_COLUMNS = (
     "episode_id",
     "scenario_id_hash",
+    "scenario_hash",
+    "seed",
     "split",
     "difficulty",
+    "template_id",
     "bug_type",
+    "reward_total",
+    "security_pass_rate",
+    "regression_pass_rate",
+    "step_count",
     "visible_observation_summary",
     "action_sequence",
     "tool_calls",
@@ -529,6 +536,7 @@ def episode_record_from_state(
         "target_weakness": getattr(state, "target_weakness", ""),
         "difficulty_tier": getattr(state, "difficulty_tier", ""),
         "domain": getattr(state, "domain", ""),
+        "scenario_hash": getattr(state, "scenario_hash", ""),
         "success": bool(getattr(state, "success", False)),
         "failure_reason": getattr(state, "failure_reason", None),
         "finding_submitted": bool(getattr(state, "finding_submitted", False)),
@@ -821,12 +829,20 @@ def episode_to_trace_row(episode: Any) -> dict[str, Any]:
     files_modified = _files_modified(record, actions)
     reward_breakdown = _final_reward_breakdown(record)
     final_obs = observations[-1] if observations else {}
+    tracking_fields = episode_to_tracking_fields(record)
     row = {
         "episode_id": _redact_text(record.get("episode_id", "")),
         "scenario_id_hash": record.get("scenario_id_hash") or _scenario_hash(record),
+        "scenario_hash": record.get("scenario_hash") or _as_dict(record.get("metrics")).get("scenario_hash", ""),
+        "seed": record.get("scenario/seed") or record.get("seed", 0),
         "split": record.get("scenario/split") or record.get("split", ""),
         "difficulty": record.get("scenario/difficulty") or record.get("difficulty", 0),
+        "template_id": record.get("scenario/template_id") or record.get("template_id", ""),
         "bug_type": record.get("scenario/bug_type") or record.get("bug_type", ""),
+        "reward_total": tracking_fields["reward/total"],
+        "security_pass_rate": tracking_fields["reward/hidden_authz_pass_rate"],
+        "regression_pass_rate": tracking_fields["reward/normal_flow_pass_rate"],
+        "step_count": record.get("step_count", len(actions)),
         "visible_observation_summary": json.dumps(
             {
                 "done": bool(record.get("done", final_obs.get("done", False))),
@@ -845,9 +861,7 @@ def episode_to_trace_row(episode: Any) -> dict[str, Any]:
                 "local_probe_count": sum(
                     1 for name in tool_names if name in {"send_local_request", "compare_identities"}
                 ),
-                "first_valid_exploit_step": episode_to_tracking_fields(record)[
-                    "skill/first_valid_exploit_step"
-                ],
+                "first_valid_exploit_step": tracking_fields["skill/first_valid_exploit_step"],
                 "diagnosis_submitted": bool(
                     record.get("diagnosis_submitted", record.get("finding_submitted", False))
                 ),
@@ -894,7 +908,7 @@ def episode_trace_fingerprint(episode: Any) -> str:
         {
             key: row.get(key, "")
             for key in TRACE_TABLE_COLUMNS
-            if key != "episode_id"
+            if key not in {"episode_id", "reward_total"}
         },
         length=24,
     )

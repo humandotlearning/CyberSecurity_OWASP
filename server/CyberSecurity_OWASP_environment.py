@@ -373,13 +373,15 @@ class CybersecurityOwaspEnvironment(
         visible_test_result: str | None = None,
         done_reason: str | None = None,
     ) -> CyberSecurityOWASPObservation:
+        available_actions = sorted(ALLOWED_TOOLS[self._state.phase])
         return CyberSecurityOWASPObservation(
             phase=self._state.phase,
             message=message,
             task_brief=self._task_brief,
+            scenario_prompt=self._scenario_prompt(available_actions),
             visible_policy_hint=self._visible_policy_hint,
             workspace_summary=self._workspace_summary,
-            available_actions=sorted(ALLOWED_TOOLS[self._state.phase]),
+            available_actions=available_actions,
             last_tool_result=message,
             last_action_valid=valid,
             last_action_error=error,
@@ -388,7 +390,60 @@ class CybersecurityOwaspEnvironment(
             done_reason=done_reason,
             done=self._state.done,
             reward=reward,
-            metadata={"episode_id": self._state.episode_id, "step_count": self._state.step_count},
+            metadata={
+                "episode_id": self._state.episode_id,
+                "step_count": self._state.step_count,
+                "seed": self._state.seed,
+                "split": self._state.split,
+                "difficulty": self._state.difficulty,
+                "difficulty_tier": self._state.difficulty_tier,
+                "domain": self._state.domain,
+                "bug_family": self._state.bug_family,
+                "template_id": self._state.template_id,
+                "scenario_hash": self._state.scenario_hash,
+            },
+        )
+
+    def _scenario_prompt(self, available_actions: list[str]) -> str:
+        users = self._visible_policy_hint.get("fixture_aliases", {}).get("users", {})
+        resources = self._visible_policy_hint.get("fixture_aliases", {}).get("resources", {})
+        visible_policy = {
+            "domain": self._visible_policy_hint.get("domain", self._state.domain),
+            "policy_rules": list(self._visible_policy_hint.get("policy_rules", [])),
+            "public_routes": list(self._visible_policy_hint.get("public_routes", [])),
+            "fixture_aliases": {
+                "users": sorted(str(key) for key in users),
+                "resources": sorted(str(key) for key in resources),
+            },
+        }
+        prompt = {
+            "environment": "CyberSecurity_OWASP",
+            "task": self._task_brief,
+            "scenario": {
+                "task_id": self._state.task_id,
+                "seed": self._state.seed,
+                "split": self._state.split,
+                "difficulty": self._state.difficulty,
+                "difficulty_tier": self._state.difficulty_tier,
+                "domain": self._state.domain,
+                "bug_family": self._state.bug_family,
+                "template_id": self._state.template_id,
+                "scenario_hash": self._state.scenario_hash,
+            },
+            "visible_policy_hint": visible_policy,
+            "workspace_summary": self._workspace_summary,
+            "available_actions": available_actions,
+            "instructions": [
+                "Use only the local generated application and the listed tools.",
+                "Discover the authorization defect with local evidence before patching.",
+                "Preserve legitimate owner/admin flows and intentionally public routes.",
+                "Submit exactly one secure, policy-aligned fix when ready.",
+            ],
+        }
+        return "CyberSecurity_OWASP scenario prompt:\n" + json.dumps(
+            prompt,
+            indent=2,
+            sort_keys=True,
         )
 
     def _finalize_terminal_episode(self, observation_record: dict[str, Any]) -> None:
