@@ -74,7 +74,7 @@ def load_reward_settings(path: str | Path | None = None) -> RewardSettings:
         or os.getenv("CYBERSECURITY_OWASP_REWARD_CONFIG", "")
         or DEFAULT_GRPO_CONFIG_PATH
     )
-    raw = yaml.safe_load(configured_path.read_text(encoding="utf-8")) or {}
+    raw = _load_yaml_with_extends(configured_path)
     reward = dict(raw.get("reward") or {})
     mode = os.getenv("CYBERSECURITY_OWASP_REWARD_MODE", str(reward.get("mode", "sparse_eval")))
     training_mode = str(reward.get("training_mode", "dense_train"))
@@ -88,6 +88,44 @@ def load_reward_settings(path: str | Path | None = None) -> RewardSettings:
     )
     validate_reward_settings(settings)
     return settings
+
+
+def _load_yaml_with_extends(path: Path, seen: set[Path] | None = None) -> dict[str, Any]:
+    """Load a YAML file, recursively merging an optional relative `extends` file."""
+
+    resolved_path = path.expanduser().resolve()
+    seen = seen or set()
+    if resolved_path in seen:
+        chain = " -> ".join(str(item) for item in [*seen, resolved_path])
+        raise ValueError(f"reward config extends cycle detected: {chain}")
+    seen.add(resolved_path)
+
+    raw = yaml.safe_load(resolved_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"reward config must be a YAML mapping: {resolved_path}")
+
+    extends = raw.get("extends")
+    if not extends:
+        return raw
+    if not isinstance(extends, str):
+        raise ValueError("reward config extends must be a string path")
+
+    base_path = Path(extends)
+    if not base_path.is_absolute():
+        base_path = resolved_path.parent / base_path
+    child = {key: value for key, value in raw.items() if key != "extends"}
+    return _deep_merge(_load_yaml_with_extends(base_path, seen), child)
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        base_value = merged.get(key)
+        if isinstance(base_value, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(base_value, value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def flatten_reward_config(
@@ -175,6 +213,7 @@ def reward_config_run_config(settings: RewardSettings | None = None) -> dict[str
         "reward_config_hash": summary["reward_config_hash"],
         "reward_config_source": summary["reward_config_source"],
         "reward_config_source_name": summary["reward_config_source_name"],
+        "reward_variant": os.getenv("CYBERSECURITY_OWASP_REWARD_VARIANT", "default") or "default",
         "reward_mode": summary["reward_mode"],
         "reward_training_mode": summary["reward_training_mode"],
         "reward_stage": summary["reward_stage"],

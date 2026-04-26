@@ -68,6 +68,45 @@ def test_reward_config_hash_and_flattened_values_are_deterministic(monkeypatch):
     assert rows["hidden_file_probe"]["terminate"] is True
 
 
+def test_reward_ablation_configs_extend_default_and_have_unique_hashes(monkeypatch):
+    monkeypatch.setenv("CYBERSECURITY_OWASP_REWARD_MODE", "dense_train")
+    paths = [
+        Path("training/configs/reward_ablations/A0_sparse_terminal_only.yaml"),
+        Path("training/configs/reward_ablations/A2_reduced_shaping.yaml"),
+        Path("training/configs/reward_ablations/A6_visible_gate.yaml"),
+        Path("training/configs/reward_ablations/A7_evidence045.yaml"),
+        Path("training/configs/reward_ablations/A3_no_speed_token.yaml"),
+    ]
+
+    settings_by_name = {path.name: load_reward_settings(path) for path in paths}
+    hashes = {reward_config_hash(settings) for settings in settings_by_name.values()}
+
+    assert len(hashes) == len(paths)
+    assert settings_by_name["A0_sparse_terminal_only.yaml"].shaping_weight == 0.0
+    assert settings_by_name["A0_sparse_terminal_only.yaml"].value("progressive_cap") == 0.0
+    assert settings_by_name["A0_sparse_terminal_only.yaml"].value("terminal_cap") == 12.0
+    assert settings_by_name["A2_reduced_shaping.yaml"].shaping_weight == 0.35
+    assert settings_by_name["A2_reduced_shaping.yaml"].value("progressive_cap") == 2.5
+    assert settings_by_name["A6_visible_gate.yaml"].value("visible_tests_improved") == 0.0
+    assert settings_by_name["A6_visible_gate.yaml"].value("app_boots_after_patch") == 0.10
+    assert settings_by_name["A7_evidence045.yaml"].value("local_evidence_found") == 0.45
+    assert settings_by_name["A3_no_speed_token.yaml"].value("speed_bonus") == 0.0
+    assert compute_token_penalty(850, settings_by_name["A3_no_speed_token.yaml"]) == 0.0
+
+
+def test_reward_config_run_config_includes_variant(monkeypatch):
+    monkeypatch.setenv("CYBERSECURITY_OWASP_REWARD_MODE", "dense_train")
+    monkeypatch.setenv("CYBERSECURITY_OWASP_REWARD_VARIANT", "abl-a2-shape035")
+
+    config = reward_config_run_config(
+        load_reward_settings("training/configs/reward_ablations/A2_reduced_shaping.yaml")
+    )
+
+    assert config["reward_variant"] == "abl-a2-shape035"
+    assert config["reward_config_source_name"] == "A2_reduced_shaping.yaml"
+    assert config["reward_config__shaping_weight__stage_value"] == 0.35
+
+
 def test_reward_config_rejects_missing_descriptions(monkeypatch):
     config_path = Path("outputs/test_reward_config_bad.yaml")
     config_path.parent.mkdir(parents=True, exist_ok=True)

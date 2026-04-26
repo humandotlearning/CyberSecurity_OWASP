@@ -1,0 +1,6 @@
+extends: ../grpo_small.yaml
+reward:
+  stage: early
+  local_evidence_found:
+    value: 0.45
+    cap: 0.45

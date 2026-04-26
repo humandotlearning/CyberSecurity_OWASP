@@ -210,6 +210,24 @@ def _configure_scenario_cache_env(*, required: bool = True) -> dict[str, str]:
     return values
 
 
+def _configure_reward_env(
+    *,
+    reward_config: str = "",
+    reward_variant: str = "",
+    reward_mode: str = "",
+) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if reward_config:
+        values["CYBERSECURITY_OWASP_REWARD_CONFIG"] = reward_config
+    if reward_variant:
+        values["CYBERSECURITY_OWASP_REWARD_VARIANT"] = reward_variant
+    if reward_mode:
+        values["CYBERSECURITY_OWASP_REWARD_MODE"] = reward_mode
+    for key, value in values.items():
+        os.environ[key] = value
+    return values
+
+
 def _print_image_startup_notice() -> None:
     global _IMAGE_NOTICE_PRINTED
     if _IMAGE_NOTICE_PRINTED:
@@ -583,6 +601,8 @@ def run_cybersecurity_owasp_baseline(
     source_mode: str = "local",
     repo_url: str = PUBLIC_REPO_URL,
     repo_branch: str = PUBLIC_REPO_BRANCH,
+    reward_config: str = "",
+    reward_variant: str = "",
 ) -> dict[str, str | int | float]:
     import statistics
     import time
@@ -627,8 +647,14 @@ def run_cybersecurity_owasp_baseline(
 
     os.environ["TRACKIO_SPACE_ID"] = trackio_space_id
     os.environ["TRACKIO_PROJECT"] = trackio_project
+    reward_env = _configure_reward_env(
+        reward_config=reward_config,
+        reward_variant=reward_variant,
+    )
     reward_settings = load_reward_settings()
     reward_tracking_config = reward_config_trackio_config(reward_settings)
+    reward_tracking_config["reward_variant"] = reward_variant or "default"
+    reward_tracking_config["reward_config_path"] = reward_config or reward_settings.source_path
     run_name = run_name or "baseline"
     output_dir = RUNS_DIR / run_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -673,6 +699,10 @@ def run_cybersecurity_owasp_baseline(
     print(f"Trackio Project: {trackio_project}")
     print(f"Reward config: {reward_tracking_config['reward_config_id']}")
     print(f"Reward config hash: {reward_tracking_config['reward_config_hash']}")
+    print(f"Reward variant: {reward_tracking_config['reward_variant']}")
+    print(f"Reward config path: {reward_tracking_config['reward_config_path']}")
+    if reward_env:
+        print(f"Reward env overrides: {reward_env}")
     print(f"Scenario cache dir: {scenario_cache_env['CYBERSECURITY_OWASP_SCENARIO_CACHE_DIR']}")
     print(f"Scenario cache coverage: {coverage}")
     print(
@@ -818,6 +848,7 @@ def run_cybersecurity_owasp_baseline(
         "num_generations": num_generations,
         "max_completion_length": max_completion_length,
         "git_sha": git_sha,
+        "reward_variant": reward_tracking_config["reward_variant"],
         **reward_tracking_config,
     }
 
@@ -998,6 +1029,8 @@ def run_cybersecurity_owasp_baseline(
 def train_cybersecurity_owasp_grpo(
     env_repo_id: str = "",
     output_repo_id: str = "",
+    initial_adapter_path: str = "",
+    initial_adapter_repo_id: str = "",
     max_steps: int = 10,
     dataset_size: int = 16,
     difficulty: int = 0,
@@ -1021,6 +1054,8 @@ def train_cybersecurity_owasp_grpo(
     repo_url: str = PUBLIC_REPO_URL,
     repo_branch: str = PUBLIC_REPO_BRANCH,
     push_to_hub: bool = False,
+    reward_config: str = "",
+    reward_variant: str = "",
 ) -> dict[str, str | int | float]:
     import inspect
     import statistics
@@ -1050,6 +1085,7 @@ def train_cybersecurity_owasp_grpo(
     import transformers.utils.hub as transformers_hub
     from datasets import Dataset
     from huggingface_hub import snapshot_download, whoami
+    from peft import PeftModel
     from transformers import TrainerCallback
     from trl import GRPOConfig, GRPOTrainer, clone_chat_template
     from trl.chat_template_utils import add_response_schema
@@ -1110,14 +1146,22 @@ def train_cybersecurity_owasp_grpo(
 
     os.environ["TRACKIO_SPACE_ID"] = trackio_space_id
     os.environ["TRACKIO_PROJECT"] = trackio_project
-    os.environ.setdefault("CYBERSECURITY_OWASP_REWARD_MODE", "dense_train")
+    reward_env = _configure_reward_env(
+        reward_config=reward_config,
+        reward_variant=reward_variant,
+        reward_mode="dense_train",
+    )
     reward_settings = load_reward_settings()
     reward_tracking_config = reward_config_trackio_config(reward_settings)
+    reward_tracking_config["reward_variant"] = reward_variant or "default"
+    reward_tracking_config["reward_config_path"] = reward_config or reward_settings.source_path
 
     model_slug = model_name.replace("/", "-")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = run_name or (
-        f"CyberSecurity_OWASP-{model_slug}-grpo-level{difficulty}-{stamp}-{git_sha[:8]}"
+        f"CyberSecurity_OWASP-{model_slug}-grpo-level{difficulty}-"
+        f"{reward_tracking_config['reward_variant']}-steps{max_steps}-seed{seed_start}-"
+        f"{stamp}-{git_sha[:8]}"
     )
     output_dir = RUNS_DIR / run_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1253,6 +1297,7 @@ def train_cybersecurity_owasp_grpo(
                     "reward_config_hash": reward_tracking_config["reward_config_hash"],
                     "reward_stage": reward_tracking_config["reward_stage"],
                     "reward_mode": reward_tracking_config["reward_mode"],
+                    "reward_variant": reward_tracking_config["reward_variant"],
                 }
             )
             return obs.scenario_prompt
@@ -1613,6 +1658,7 @@ def train_cybersecurity_owasp_grpo(
                         "reward_config_hash": reward_tracking_config["reward_config_hash"],
                         "reward_stage": reward_tracking_config["reward_stage"],
                         "reward_mode": reward_tracking_config["reward_mode"],
+                        "reward_variant": reward_tracking_config["reward_variant"],
                     }
                 )
                 try:
@@ -1704,6 +1750,9 @@ def train_cybersecurity_owasp_grpo(
     print(f"Run name: {run_name}")
     print(f"Reward config: {reward_tracking_config['reward_config_id']}")
     print(f"Reward config hash: {reward_tracking_config['reward_config_hash']}")
+    print(f"Reward variant: {reward_tracking_config['reward_variant']}")
+    print(f"Reward config path: {reward_tracking_config['reward_config_path']}")
+    print(f"Reward env overrides: {reward_env}")
     print(f"Model cache volume: {CACHE_VOLUME_NAME}")
     print(f"Scenario cache volume: {SCENARIO_CACHE_VOLUME_NAME}")
     print(f"Scenario cache dir: {scenario_cache_env['CYBERSECURITY_OWASP_SCENARIO_CACHE_DIR']}")
@@ -1715,6 +1764,10 @@ def train_cybersecurity_owasp_grpo(
     print(f"Unsloth cache: {cache_env['UNSLOTH_CACHE_DIR']}")
     print(f"Triton cache: {cache_env['TRITON_CACHE_DIR']}")
     print(f"Hub push enabled: {push_to_hub}")
+    if initial_adapter_path:
+        print(f"Initial SFT adapter path: {initial_adapter_path}")
+    if initial_adapter_repo_id:
+        print(f"Initial SFT adapter repo: https://huggingface.co/{initial_adapter_repo_id}")
     print(
         "GRPO throughput config: "
         f"per_device_train_batch_size={per_device_train_batch_size}, "
@@ -1801,25 +1854,40 @@ def train_cybersecurity_owasp_grpo(
             f"{exc!r}"
         )
 
-    model = model_api.get_peft_model(
-        model,
-        r=lora_rank,
-        target_modules=[
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
-        ],
-        lora_alpha=lora_rank * 2,
-        use_gradient_checkpointing="unsloth",
-        random_state=3407,
-    )
+    adapter_source = initial_adapter_path
+    if initial_adapter_repo_id:
+        print(f"Downloading initial SFT adapter: {initial_adapter_repo_id}")
+        adapter_source = snapshot_download(
+            repo_id=initial_adapter_repo_id,
+            cache_dir=str(HF_HUB_CACHE_DIR),
+            token=hf_token,
+        )
+        cache_volume.commit()
+    if adapter_source:
+        print(f"Loading initial SFT adapter for trainable GRPO continuation: {adapter_source}")
+        model = PeftModel.from_pretrained(model, adapter_source, is_trainable=True)
+        if hasattr(model, "print_trainable_parameters"):
+            model.print_trainable_parameters()
+    else:
+        model = model_api.get_peft_model(
+            model,
+            r=lora_rank,
+            target_modules=[
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+            ],
+            lora_alpha=lora_rank * 2,
+            use_gradient_checkpointing="unsloth",
+            random_state=3407,
+        )
     if hasattr(model_api, "for_training"):
         model_api.for_training(model)
-    print("LoRA adapter attached and model switched to training mode.")
+    print("LoRA adapter ready and model switched to training mode.")
 
     grpo_config_values = {
         "temperature": 1.0,
@@ -1942,6 +2010,8 @@ def train_cybersecurity_owasp_grpo(
         "difficulty": difficulty,
         "split": split,
         "model_name": model_name,
+        "initial_adapter_path": initial_adapter_path,
+        "initial_adapter_repo_id": initial_adapter_repo_id,
         "max_completion_length": max_completion_length,
         "num_generations": num_generations,
         "per_device_train_batch_size": per_device_train_batch_size,
@@ -1956,6 +2026,7 @@ def train_cybersecurity_owasp_grpo(
         "push_to_hub": push_to_hub,
         "scenario_cache_volume": SCENARIO_CACHE_VOLUME_NAME,
         "scenario_cache_mode": "require",
+        "reward_variant": reward_tracking_config["reward_variant"],
         **reward_tracking_config,
     }
 
@@ -1965,6 +2036,8 @@ def main(
     mode: str = "train",
     env_repo_id: str = "",
     output_repo_id: str = "",
+    initial_adapter_path: str = "",
+    initial_adapter_repo_id: str = "",
     max_steps: int = 10,
     dataset_size: int = 16,
     difficulty: int = 0,
@@ -1989,6 +2062,8 @@ def main(
     repo_branch: str = PUBLIC_REPO_BRANCH,
     detach: bool = False,
     push_to_hub: bool = False,
+    reward_config: str = "",
+    reward_variant: str = "",
     cache_seed_start: int = 0,
     cache_difficulty_buckets: int = 0,
     cache_train_per_bucket: int = 0,
@@ -2042,6 +2117,8 @@ def main(
             source_mode=source_mode,
             repo_url=repo_url,
             repo_branch=repo_branch,
+            reward_config=reward_config,
+            reward_variant=reward_variant,
         )
         if detach:
             call = run_cybersecurity_owasp_baseline.spawn(**kwargs)
@@ -2100,7 +2177,13 @@ def main(
     if git_sha == "nogit":
         try:
             git_sha = subprocess.check_output(
-                ["git", "rev-parse", "HEAD"],
+                [
+                    "git",
+                    "-c",
+                    f"safe.directory={PROJECT_ROOT.as_posix()}",
+                    "rev-parse",
+                    "HEAD",
+                ],
                 cwd=PROJECT_ROOT,
                 text=True,
                 stderr=subprocess.DEVNULL,
@@ -2110,12 +2193,15 @@ def main(
 
     model_slug = model_name.replace("/", "-")
     local_stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    variant_tag = reward_variant or "default"
     run_name = run_name or (
         f"CyberSecurity_OWASP-{model_slug}-grpo-level{difficulty}-"
-        f"{local_stamp}-{git_sha[:8]}"
+        f"{variant_tag}-steps{max_steps}-seed{seed_start}-{local_stamp}-{git_sha[:8]}"
     )
 
     print(f"Run name: {run_name}")
+    print(f"Reward variant: {variant_tag}")
+    print(f"Reward config path: {reward_config or '(default training/configs/grpo_small.yaml)'}")
     print(f"Source mode: {source_mode}")
     if source_mode == "public":
         print(f"Public repo: {repo_url}@{repo_branch}")
@@ -2131,6 +2217,10 @@ def main(
             f"<hf-user>/CyberSecurity_OWASP-{_model_repo_slug(model_name)}-grpo-lora"
         )
     print(f"Hub push enabled: {push_to_hub}")
+    if initial_adapter_path:
+        print(f"Initial SFT adapter path: {initial_adapter_path}")
+    if initial_adapter_repo_id:
+        print(f"Initial SFT adapter repo: https://huggingface.co/{initial_adapter_repo_id}")
     print(f"Model cache volume: {CACHE_VOLUME_NAME}")
     print(f"Scenario cache volume: {SCENARIO_CACHE_VOLUME_NAME}")
     print(
@@ -2164,6 +2254,8 @@ def main(
     kwargs = dict(
         env_repo_id=env_repo_id,
         output_repo_id=output_repo_id,
+        initial_adapter_path=initial_adapter_path,
+        initial_adapter_repo_id=initial_adapter_repo_id,
         max_steps=max_steps,
         dataset_size=dataset_size,
         difficulty=difficulty,
@@ -2187,6 +2279,8 @@ def main(
         repo_url=repo_url,
         repo_branch=repo_branch,
         push_to_hub=push_to_hub,
+        reward_config=reward_config,
+        reward_variant=reward_variant,
     )
     preflight = verify_modal_scenario_cache_for_training.remote(
         split=split,

@@ -1,0 +1,17 @@
+extends: ../grpo_small.yaml
+reward:
+  stage: early
+  step_penalty:
+    early: -0.002
+    middle: -0.002
+    late: -0.002
+    final: -0.002
+    cap: -0.25
+  speed_bonus:
+    value: 0.0
+  token_penalty:
+    early: 0.0
+    middle: 0.0
+    late: 0.0
+    final: 0.0
+    cap: 0.0

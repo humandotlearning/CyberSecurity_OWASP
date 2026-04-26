@@ -17,6 +17,7 @@ RUN_SCENARIO_FIELDS = (
     "run/base_model",
     "run/algo",
     "run/reward_version",
+    "run/reward_variant",
     "run/env_version",
     "scenario/seed",
     "scenario/template_id",
@@ -136,6 +137,16 @@ CANONICAL_TRACKIO_SIGNALS = tuple(
 
 DERIVED_TRACKIO_METRICS = (
     "reward/public_hidden_gap",
+    "reward/visible_hidden_gap",
+    "reward/dense_total",
+    "reward/dense_to_terminal_ratio",
+    "episode/time_to_first_evidence",
+    "episode/time_to_first_patch",
+    "episode/repeated_action_rate",
+    "episode/submit_without_evidence_rate",
+    "episode/hardcoded_identifier_rate",
+    "episode/deny_all_patch_rate",
+    "episode/patch_to_hidden_success_conversion_rate",
     "cheat/score",
 )
 
@@ -545,6 +556,7 @@ def episode_record_from_state(
         "run/reward_config_hash": context.get("reward_config_hash", ""),
         "run/reward_mode": context.get("reward_mode", ""),
         "run/reward_stage": context.get("reward_stage", ""),
+        "run/reward_variant": context.get("reward_variant", ""),
         "run/env_version": context.get("env_version", "0.1.0"),
         "episode_id": getattr(state, "episode_id", ""),
         "task_id": getattr(state, "task_id", ""),
@@ -663,6 +675,16 @@ def episode_to_tracking_fields(episode: Any) -> dict[str, Any]:
         -_float(final_reward.get("safety")),
     )
     fields["reward/public_hidden_gap"] = visible_rate - hidden_rate
+    fields["reward/visible_hidden_gap"] = fields["reward/public_hidden_gap"]
+    fields["reward/dense_total"] = (
+        fields["reward/total"] - fields["reward/terminal_15"]
+    )
+    terminal_denominator = abs(fields["reward/terminal_15"])
+    fields["reward/dense_to_terminal_ratio"] = (
+        fields["reward/dense_total"] / terminal_denominator
+        if terminal_denominator > 1e-9
+        else fields["reward/dense_total"]
+    )
 
     fields["skill/valid_action_rate"] = max(0.0, min(1.0, valid_action_rate))
     fields["skill/discovery_success"] = fields["reward/bug_classification_correct"]
@@ -698,11 +720,33 @@ def episode_to_tracking_fields(episode: Any) -> dict[str, Any]:
     fields["episode/patch_attempt_count"] = _float(
         record.get("patch_attempt_count", tool_names.count("patch_file"))
     )
+    fields["episode/time_to_first_evidence"] = fields["skill/first_valid_exploit_step"]
+    fields["episode/time_to_first_patch"] = _first_tool_step(
+        actions,
+        {"patch_file"},
+        observations,
+    )
+    action_keys = [
+        json.dumps(action, sort_keys=True, default=str)
+        for action in actions
+    ]
+    repeated_actions = len(action_keys) - len(set(action_keys))
+    fields["episode/repeated_action_rate"] = repeated_actions / max(1.0, float(len(action_keys)))
     fields["episode/submit_without_test_rate"] = 1.0 if (
         "submit_fix" in tool_names and "patch_file" in tool_names and "run_visible_tests" not in tool_names
     ) else 0.0
+    fields["episode/submit_without_evidence_rate"] = 1.0 if (
+        "submit_fix" in tool_names and fields["episode/time_to_first_evidence"] < 0.0
+    ) else 0.0
     fields["episode/cheat_attempt_rate"] = 1.0 if anti_flags else 0.0
     fields["episode/oversecure_rate"] = 1.0 if bool(quality.get("deny_all")) else 0.0
+    fields["episode/hardcoded_identifier_rate"] = 1.0 if (
+        "hardcoded_hidden_identifier" in anti_flags or bool(quality.get("hardcoded"))
+    ) else 0.0
+    fields["episode/deny_all_patch_rate"] = fields["episode/oversecure_rate"]
+    fields["episode/patch_to_hidden_success_conversion_rate"] = (
+        hidden_rate if "patch_file" in tool_names else 0.0
+    )
 
     fields["cheat/hidden_file_read_attempt"] = 1.0 if (
         "blocked_file_probe" in anti_flags and "hidden" in path_text
@@ -802,6 +846,15 @@ def train_metric_aliases(metrics: Mapping[str, Any]) -> dict[str, float]:
         "train/reward_token_penalty_mean": _float(metrics.get("reward/token_penalty")),
         "train/reward_speed_bonus_mean": _float(metrics.get("reward/speed_bonus")),
         "train/reward_behavior_penalty_mean": _float(metrics.get("reward/behavior_penalty")),
+        "train/dense_to_terminal_ratio": _float(metrics.get("reward/dense_to_terminal_ratio")),
+        "train/visible_hidden_gap": _float(metrics.get("reward/visible_hidden_gap")),
+        "train/repeated_action_rate": _float(metrics.get("episode/repeated_action_rate")),
+        "train/submit_without_evidence_rate": _float(metrics.get("episode/submit_without_evidence_rate")),
+        "train/hardcoded_identifier_rate": _float(metrics.get("episode/hardcoded_identifier_rate")),
+        "train/deny_all_patch_rate": _float(metrics.get("episode/deny_all_patch_rate")),
+        "train/patch_to_hidden_success_conversion_rate": _float(
+            metrics.get("episode/patch_to_hidden_success_conversion_rate")
+        ),
         "train/success_rate": _float(metrics.get("skill/patch_success")),
         "train/exploit_block_rate": _float(metrics.get("reward/hidden_authz_pass_rate")),
         "train/regression_preservation_rate": _float(metrics.get("reward/normal_flow_pass_rate")),

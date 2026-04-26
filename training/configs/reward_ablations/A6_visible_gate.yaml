@@ -1,0 +1,10 @@
+extends: ../grpo_small.yaml
+reward:
+  stage: early
+  app_boots_after_patch:
+    value: 0.10
+  visible_tests_improved:
+    value: 0.0
+    cap: 0.20
+  public_routes_visible_pass:
+    value: 0.10

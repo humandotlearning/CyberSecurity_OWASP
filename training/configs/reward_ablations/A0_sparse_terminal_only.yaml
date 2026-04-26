@@ -1,0 +1,97 @@
+extends: ../grpo_small.yaml
+reward:
+  stage: early
+  terminal_cap:
+    value: 12.0
+  progressive_cap:
+    value: 0.0
+  penalty_floor:
+    value: -10.0
+  train_cap:
+    value: 12.0
+  shaping_weight:
+    early: 0.0
+    middle: 0.0
+    late: 0.0
+    final: 0.0
+  policy_inspected:
+    value: 0.0
+  route_map_inspected:
+    value: 0.0
+    cap: 0.0
+  relevant_file_inspected:
+    value: 0.0
+    cap: 0.0
+  local_evidence_found:
+    value: 0.0
+    cap: 0.0
+  diagnosis_correct:
+    value: 0.0
+  patch_applies:
+    value: 0.0
+  app_boots_after_patch:
+    value: 0.0
+  visible_tests_improved:
+    value: 0.0
+    cap: 0.0
+  public_routes_visible_pass:
+    value: 0.0
+  step_penalty:
+    early: 0.0
+    middle: 0.0
+    late: 0.0
+    final: 0.0
+    cap: 0.0
+  speed_bonus:
+    value: 0.0
+  token_penalty:
+    early: 0.0
+    middle: 0.0
+    late: 0.0
+    final: 0.0
+    cap: 0.0
+  invalid_action:
+    value: 0.0
+  repeated_invalid_action:
+    value: 0.0
+  repeated_low_value_action:
+    value: 0.0
+  no_progress_action:
+    value: 0.0
+  noop_action:
+    value: 0.0
+  repeated_file_read:
+    value: 0.0
+  repeated_local_request:
+    value: 0.0
+  repeated_visible_tests:
+    value: 0.0
+  patch_before_policy:
+    value: 0.0
+  submit_without_patch:
+    value: 0.0
+  submit_without_visible_tests:
+    value: 0.0
+  excessive_patch_attempt:
+    value: 0.0
+  too_many_files_changed:
+    value: 0.0
+  oversized_patch:
+    value: 0.0
+    severe_value: 0.0
+  hidden_file_probe:
+    value: -10.0
+    terminate: true
+  test_file_edit:
+    value: -10.0
+    terminate: true
+  host_path_escape:
+    value: -10.0
+    terminate: true
+  external_url_attempt:
+    value: -10.0
+    terminate: true
+  hardcoded_identifier:
+    value: -4.0
+  deny_all_patch:
+    value: -5.0

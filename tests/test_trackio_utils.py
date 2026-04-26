@@ -39,6 +39,10 @@ def test_canonical_tracking_fields_exist_and_are_numeric_where_expected():
         assert isinstance(fields["reward/hidden_authz_pass_rate"], float)
         assert isinstance(fields["reward/normal_flow_pass_rate"], float)
         assert isinstance(fields["reward/public_hidden_gap"], float)
+        assert isinstance(fields["reward/dense_to_terminal_ratio"], float)
+        assert isinstance(fields["episode/time_to_first_patch"], float)
+        assert isinstance(fields["episode/repeated_action_rate"], float)
+        assert isinstance(fields["episode/patch_to_hidden_success_conversion_rate"], float)
         assert isinstance(fields["skill/exploit_to_patch_alignment"], float)
 
         metrics = aggregate_episode_metrics([record])
@@ -156,11 +160,13 @@ def test_log_reward_config_emits_scalar_values_and_table(monkeypatch):
     monkeypatch.setitem(sys.modules, "trackio", fake_trackio)
     monkeypatch.setenv("CYBERSECURITY_OWASP_REWARD_MODE", "dense_train")
     monkeypatch.setenv("CYBERSECURITY_OWASP_REWARD_STAGE", "early")
+    monkeypatch.setenv("CYBERSECURITY_OWASP_REWARD_VARIANT", "abl-test")
 
     settings = load_reward_settings()
     summary = log_reward_config(settings, step=0)
 
     assert fake_trackio.config["reward_config_hash"] == summary["reward_config_hash"]
+    assert fake_trackio.config["reward_variant"] == "abl-test"
     assert fake_trackio.config["reward_config_values"]["policy_inspected"]["value"] == 0.30
     assert fake_trackio.config["reward_config__policy_inspected__value"] == 0.30
     scalar_payload = next(payload for payload, _step in logged if "reward_config/policy_inspected/value" in payload)

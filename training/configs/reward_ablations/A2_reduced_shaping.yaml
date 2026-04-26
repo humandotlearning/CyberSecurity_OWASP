@@ -1,0 +1,12 @@
+extends: ../grpo_small.yaml
+reward:
+  stage: early
+  progressive_cap:
+    value: 2.5
+  train_cap:
+    value: 18.0
+  shaping_weight:
+    early: 0.35
+    middle: 0.35
+    late: 0.35
+    final: 0.35
