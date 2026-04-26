@@ -14,7 +14,7 @@ So I built **CyberSecurity_OWASP** around that idea:
 
 > If frontier models can scale vulnerability discovery, small RL-trained defenders should scale **vulnerability prevention**.
 
-The goal is an OpenEnv environment where a small open model ( in this case **Gemma 4 E2B**) can learn an actual defensive workflow: inspect an application, understand the intended authorization policy, discover a broken access control bug, patch the code, and preserve legitimate behavior.
+The goal is an OpenEnv environment where a **small open model** ( in this case **Gemma 4 E2B**) can learn an actual defensive workflow: inspect an application, understand the intended authorization policy, discover a broken access control bug, patch the code, and preserve legitimate behavior.
 
 ## Why OWASP A01?
 
@@ -50,7 +50,6 @@ inspect generated app + policy
 
 The current MVP focuses on generated FastAPI-style invoice applications with injected OWASP A01 BOLA/IDOR defects. The agent must inspect the app, compare identities, use safe local requests, diagnose the bug, patch the vulnerable route or service code, run visible checks, and submit a final fix.
 
-This is not a static multiple-choice benchmark. It is an interactive environment with tools, state, hidden checks, and reward feedback.
 
 ## Architecture and Training Flow
 
