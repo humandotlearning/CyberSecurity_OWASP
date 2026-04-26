@@ -10,11 +10,11 @@ Glasswing is aimed at securing critical software with Claude Mythos Preview, a f
 
 Large operating systems, browsers, banks, and cloud providers may get access to frontier cybersecurity models and expensive scanning pipelines. Smaller teams, solo developers, open-source maintainers, indie hackers, and "vibe coders" are also shipping real software. Their code handles invoices, accounts, uploads, profiles, subscriptions, internal dashboards, and customer data. They face the same class of vulnerabilities, but they do not have the same budget, security staff, or model access.
 
-So I built **CyberSecurity_OWASP** around a different idea:
+So I built **CyberSecurity_OWASP** around that idea:
 
-> If frontier models can scale vulnerability discovery, small RL-trained defenders should scale vulnerability prevention.
+> If frontier models can scale vulnerability discovery, small RL-trained defenders should scale **vulnerability prevention**.
 
-The goal is not another benchmark where an LLM answers security trivia. The goal is an OpenEnv environment where a small open model can learn an actual defensive workflow: inspect an application, understand the intended authorization policy, discover a broken access control bug, patch the code, and preserve legitimate behavior.
+The goal is an OpenEnv environment where a **small open model** ( in this case **Gemma 4 E2B**) can learn an actual defensive workflow: inspect an application, understand the intended authorization policy, discover a broken access control bug, patch the code, and preserve legitimate behavior.
 
 ## Ablations: Where the Reward Started Working
 
@@ -71,7 +71,6 @@ inspect generated app + policy
 
 The current MVP focuses on generated FastAPI-style invoice applications with injected OWASP A01 BOLA/IDOR defects. The agent must inspect the app, compare identities, use safe local requests, diagnose the bug, patch the vulnerable route or service code, run visible checks, and submit a final fix.
 
-This is not a static multiple-choice benchmark. It is an interactive environment with tools, state, hidden checks, and reward feedback.
 
 ## Architecture and Training Flow
 
