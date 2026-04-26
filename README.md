@@ -187,6 +187,76 @@ The training scaffold is intentionally minimal until the environment/verifier be
 Use the Modal launchers in `scripts/modal_train_grpo.py` (persistent) and
 `scripts/modal_ephemeral_train.py` (smoke) for real GRPO runs.
 
+### Run SFT And GRPO Training Scripts
+
+Training runs on Modal. Do not run the GRPO loop directly on the local machine;
+use the launcher scripts so scenario cache preflight, Trackio logging, Modal
+volumes, and Hub uploads stay consistent.
+
+First install the Modal extra and prepare the scenario cache:
+
+```bash
+uv sync --extra modal
+uv run --extra modal modal run scripts/modal_train_grpo.py --mode config
+uv run --extra modal modal run scripts/modal_train_grpo.py --mode prepare-cache
+```
+
+Generate and verify SFT trajectories before supervised fine-tuning:
+
+```bash
+uv run python scripts/generate_sft_dataset.py \
+  --teacher-model deepseek-ai/DeepSeek-V4-Pro \
+  --target-model unsloth/gemma-4-E2B-it \
+  --difficulty-levels 0,1,2,3 \
+  --episodes 75 \
+  --validation-episodes 20 \
+  --workers 8 \
+  --out-dir outputs/sft
+
+uv run python scripts/generate_sft_dataset.py \
+  --verify-only \
+  --difficulty-levels 0,1,2,3 \
+  --out-dir outputs/sft
+```
+
+Run SFT on Modal and push the warm-start LoRA:
+
+```bash
+uv run --extra modal modal run --detach scripts/modal_train_sft.py \
+  --local-train-path outputs/sft/train.jsonl \
+  --local-validation-path outputs/sft/validation.jsonl \
+  --local-manifest-path outputs/sft/manifest.json \
+  --required-difficulties 0,1,2,3 \
+  --trackio-space-id Humanlearning/CyberSecurity_OWASP-trackio \
+  --trackio-project CyberSecurity_OWASP-sft \
+  --output-repo-id Humanlearning/CyberSecurity_OWASP-unsloth-gemma-4-e2b-it-sft-lora \
+  --push-to-hub \
+  --detach
+```
+
+Continue with GRPO from the SFT adapter:
+
+```bash
+uv run --extra modal modal run --detach scripts/modal_train_grpo.py \
+  --initial-adapter-repo-id Humanlearning/CyberSecurity_OWASP-unsloth-gemma-4-e2b-it-sft-lora \
+  --max-steps 300 \
+  --dataset-size 64 \
+  --num-generations 8 \
+  --max-completion-length 768 \
+  --difficulty 0 \
+  --trace-log-every 10 \
+  --trackio-space-id Humanlearning/CyberSecurity_OWASP-trackio \
+  --trackio-project CyberSecurity_OWASP-grpo \
+  --detach
+```
+
+For reward-rubric ablations, use the PowerShell launcher and configs under
+`training/configs/reward_ablations/`:
+
+```powershell
+.\scripts\launch_reward_ablations.ps1
+```
+
 Modal smoke and GRPO runs use `CYBERSECURITY_OWASP_SCENARIO_CACHE_MODE=require` and mount the persistent `CyberSecurity_OWASP-scenario-cache` volume. Prepare that cache before smoke/training:
 
 ```bash
