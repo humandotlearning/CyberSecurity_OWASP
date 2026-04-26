@@ -27,6 +27,8 @@ The current implementation includes a functional closed-loop MVP scenario: an in
 
 ## Diagrams
 
+[Architecture diagram](assets/architecture_diagram.svg) | [RL training flow diagram](assets/env_rl_training_flow_diagram.svg)
+
 ![CyberSecurity_OWASP architecture](assets/architecture_diagram.svg)
 
 ![CyberSecurity_OWASP RL training flow](assets/env_rl_training_flow_diagram.svg)

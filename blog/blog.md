@@ -52,6 +52,14 @@ The current MVP focuses on generated FastAPI-style invoice applications with inj
 
 This is not a static multiple-choice benchmark. It is an interactive environment with tools, state, hidden checks, and reward feedback.
 
+## Architecture and Training Flow
+
+[Architecture diagram](../assets/architecture_diagram.svg) | [RL training flow diagram](../assets/env_rl_training_flow_diagram.svg)
+
+![CyberSecurity_OWASP architecture](../assets/architecture_diagram.svg)
+
+![CyberSecurity_OWASP RL training flow](../assets/env_rl_training_flow_diagram.svg)
+
 The agent can use tools such as:
 
 ```text
