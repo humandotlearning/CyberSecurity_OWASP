@@ -89,6 +89,70 @@ Stop or roll back if reward rises while sampled traces show deny-all patches, ha
 
 Stop or downgrade to local-dev only if Modal training/eval shows runtime scenario compilation, cache misses in required mode, or cache hit rate below the configured target.
 
+## Parallel Modal Runs
+
+Parallel GRPO runs are allowed, but they must not share mutable experiment
+identity or mutate shared caches while another job is training.
+
+Before launching another run:
+
+1. Check active Modal apps:
+
+```bash
+uv run --extra modal modal app list
+```
+
+2. Inspect any active `CyberSecurity_OWASP` app before starting another job:
+
+```bash
+uv run --extra modal modal app logs <app-id>
+```
+
+3. Use both detach layers for long jobs:
+
+```bash
+uv run --extra modal modal run --detach scripts/modal_train_grpo.py \
+  --max-steps 300 \
+  --dataset-size 64 \
+  --num-generations 8 \
+  --max-completion-length 768 \
+  --difficulty 0 \
+  --trace-log-every 10 \
+  --seed-start 10000 \
+  --detach
+```
+
+The Modal CLI `--detach` keeps the remote function alive after the local
+entrypoint disconnects. The launcher `--detach` prevents the parent Modal
+function from waiting on the spawned GPU call. Use both; using only the script
+flag can let Modal stop the run when the local client exits.
+
+For concurrent experiments:
+
+- Assign every run a distinct `--seed-start` range, normally at least 10,000
+  seeds apart.
+- Keep `CYBERSECURITY_OWASP_SCENARIO_CACHE_MODE=require`.
+- Do not run `prepare-cache --cache-force` while any training job is active.
+- Leave `--push-to-hub` off unless every job has a unique `--output-repo-id`.
+- Keep Trackio run names unique. The launcher timestamp normally handles this;
+  set `RUN_NAME` only when it is globally unique.
+- Use the same Trackio Space/project for comparison, but never reuse a run
+  name.
+- Treat `CyberSecurity_OWASP-model-cache` and
+  `CyberSecurity_OWASP-scenario-cache` as shared read-mostly volumes during
+  training. Run checkpoints and artifacts must live under the run-specific
+  output directory.
+- For clean comparisons, keep model, difficulty, dataset size, generation
+  length, reward config, and cache version fixed; vary only `seed-start` or the
+  one hyperparameter being tested.
+
+On Windows, if Modal startup fails with a Unicode `charmap` encoding error,
+rerun the command with UTF-8 enabled:
+
+```powershell
+$env:PYTHONIOENCODING='utf-8'; $env:PYTHONUTF8='1'; uv run --extra modal modal run --detach scripts/modal_train_grpo.py --max-steps 300 --dataset-size 64 --num-generations 4 --max-completion-length 768 --difficulty 0 --trace-log-every 10 --seed-start 60000 --detach
+```
+
 ## TRL, OpenEnv, And Unsloth Guidance
 
 - Use TRL GRPO for verifier-driven rewards. Keep multiple independent reward functions for logging and diagnosis.

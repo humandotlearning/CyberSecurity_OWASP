@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -88,6 +90,106 @@ def load_reward_settings(path: str | Path | None = None) -> RewardSettings:
     return settings
 
 
+def flatten_reward_config(
+    settings: RewardSettings | None = None,
+) -> list[dict[str, Any]]:
+    """Return display-friendly reward config rows for tracking dashboards."""
+
+    settings = settings or load_reward_settings()
+    rows: list[dict[str, Any]] = []
+    for key in sorted(settings.raw):
+        entry = settings.raw[key]
+        if not isinstance(entry, dict):
+            continue
+        has_resolved_value = "value" in entry or settings.stage in entry
+        rows.append(
+            {
+                "key": key,
+                "value": _empty_if_missing(entry.get("value")),
+                "stage_value": _empty_if_missing(entry.get(settings.stage)),
+                "resolved": settings.value(key, 0.0) if has_resolved_value else "",
+                "cap": _empty_if_missing(entry.get("cap")),
+                "threshold": _empty_if_missing(
+                    entry.get("threshold", entry.get("threshold_lines"))
+                ),
+                "severe_threshold": _empty_if_missing(
+                    entry.get("severe_threshold", entry.get("severe_threshold_lines"))
+                ),
+                "terminate": bool(entry.get("terminate", False)),
+                "description": str(entry.get("description", "")),
+            }
+        )
+    return rows
+
+
+def reward_config_hash(settings: RewardSettings | None = None) -> str:
+    """Return a deterministic hash for the effective reward configuration."""
+
+    settings = settings or load_reward_settings()
+    payload = {
+        "mode": settings.mode,
+        "training_mode": settings.training_mode,
+        "stage": settings.stage,
+        "shaping_weight": settings.shaping_weight,
+        "raw": _strip_descriptions(settings.raw),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def reward_config_summary(settings: RewardSettings | None = None) -> dict[str, Any]:
+    """Return reward config identity and flattened rows for run metadata."""
+
+    settings = settings or load_reward_settings()
+    config_hash = reward_config_hash(settings)
+    source = Path(settings.source_path)
+    return {
+        "reward_config_id": (
+            f"{source.stem}-{settings.mode}-{settings.stage}-{config_hash[:12]}"
+        ),
+        "reward_config_hash": config_hash,
+        "reward_config_source": str(source),
+        "reward_config_source_name": source.name,
+        "reward_mode": settings.mode,
+        "reward_training_mode": settings.training_mode,
+        "reward_stage": settings.stage,
+        "reward_shaping_weight": settings.shaping_weight,
+        "reward_entries": flatten_reward_config(settings),
+    }
+
+
+def reward_config_run_config(settings: RewardSettings | None = None) -> dict[str, Any]:
+    """Return compact reward config fields safe to store in Trackio run config."""
+
+    summary = reward_config_summary(settings)
+    reward_values = {
+        str(row["key"]): {
+            key: value
+            for key, value in row.items()
+            if key != "key" and value != ""
+        }
+        for row in summary["reward_entries"]
+    }
+    config = {
+        "reward_config_id": summary["reward_config_id"],
+        "reward_config_hash": summary["reward_config_hash"],
+        "reward_config_source": summary["reward_config_source"],
+        "reward_config_source_name": summary["reward_config_source_name"],
+        "reward_mode": summary["reward_mode"],
+        "reward_training_mode": summary["reward_training_mode"],
+        "reward_stage": summary["reward_stage"],
+        "reward_shaping_weight": summary["reward_shaping_weight"],
+        "reward_config_values": reward_values,
+        "reward_config_values_json": json.dumps(reward_values, sort_keys=True),
+    }
+    for reward_key, values in reward_values.items():
+        safe_reward_key = _config_key_safe(reward_key)
+        for field, value in values.items():
+            if isinstance(value, (int, float, bool)):
+                config[f"reward_config__{safe_reward_key}__{field}"] = value
+    return config
+
+
 def validate_reward_settings(settings: RewardSettings) -> None:
     if settings.mode not in REWARD_MODES:
         raise ValueError("reward.mode must be dense_train or sparse_eval")
@@ -101,6 +203,26 @@ def validate_reward_settings(settings: RewardSettings) -> None:
             continue
         if not str(value.get("description", "")).strip():
             raise ValueError(f"reward.{key}.description is required")
+
+
+def _empty_if_missing(value: Any) -> Any:
+    return "" if value is None else value
+
+
+def _strip_descriptions(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _strip_descriptions(item)
+            for key, item in value.items()
+            if key != "description"
+        }
+    if isinstance(value, list):
+        return [_strip_descriptions(item) for item in value]
+    return value
+
+
+def _config_key_safe(value: str) -> str:
+    return "".join(char if char.isalnum() or char == "_" else "_" for char in value).strip("_")
 
 
 def compute_token_penalty(

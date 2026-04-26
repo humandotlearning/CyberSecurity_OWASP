@@ -16,6 +16,7 @@ Example:
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import subprocess
@@ -45,6 +46,7 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 PUBLIC_REPO_URL = "https://github.com/humandotlearning/CyberSecurity_OWASP.git"
 PUBLIC_REPO_BRANCH = "master"
 DEFAULT_GEMMA_MODEL = "unsloth/gemma-4-E2B-it"
+GRPO_TRAINING_TIMEOUT_SECONDS = 24 * 60 * 60
 _IMAGE_NOTICE_PRINTED = False
 
 
@@ -118,6 +120,56 @@ def _validate_vllm_config(*, use_vllm: bool, vllm_gpu_memory_utilization: float)
             "--vllm-gpu-memory-utilization must be in the interval (0.0, 0.95] "
             "when --use-vllm is enabled."
         )
+
+
+def _extract_first_json_object(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    candidates = [stripped]
+    if "```" in stripped:
+        for part in stripped.split("```"):
+            part = part.strip()
+            if part.startswith("json"):
+                part = part[4:].strip()
+            candidates.append(part)
+
+    for candidate in candidates:
+        try:
+            loaded = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(loaded, dict):
+            return loaded
+
+    start = stripped.find("{")
+    while start >= 0:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(stripped)):
+            char = stripped[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        loaded = json.loads(stripped[start : index + 1])
+                    except Exception:
+                        break
+                    if isinstance(loaded, dict):
+                        return loaded
+        start = stripped.find("{", start + 1)
+    return None
 
 
 def _configure_modal_cache_env() -> dict[str, str]:
@@ -410,7 +462,6 @@ def verify_modal_scenario_cache_for_training(
     from CyberSecurity_OWASP.server.CyberSecurity_OWASP_environment import (
         CybersecurityOwaspEnvironment,
     )
-    from CyberSecurity_OWASP.reward_config import compute_token_penalty
     from CyberSecurity_OWASP.server.curriculum import CurriculumController
     from CyberSecurity_OWASP.server.scenario_cache import ScenarioCache
 
@@ -514,6 +565,436 @@ def check_training_imports() -> dict[str, str]:
     volumes={RUNS_DIR: volume, CACHE_DIR: cache_volume, SCENARIO_CACHE_DIR: scenario_cache_volume},
     secrets=secrets,
 )
+def run_cybersecurity_owasp_baseline(
+    max_steps: int = 50,
+    dataset_size: int = 1,
+    difficulty: int = 0,
+    split: str = "train",
+    model_name: str = DEFAULT_GEMMA_MODEL,
+    max_seq_length: int = 4096,
+    max_completion_length: int = 768,
+    trackio_space_id: str = "Humanlearning/CyberSecurity_OWASP-trackio",
+    trackio_project: str = "CyberSecurity_OWASP-grpo",
+    num_generations: int = 1,
+    trace_log_every: int = 1,
+    seed_start: int = 0,
+    git_sha: str = "nogit",
+    run_name: str = "baseline",
+    source_mode: str = "local",
+    repo_url: str = PUBLIC_REPO_URL,
+    repo_branch: str = PUBLIC_REPO_BRANCH,
+) -> dict[str, str | int | float]:
+    import statistics
+    import time
+
+    import torch
+    from huggingface_hub import snapshot_download, whoami
+    from unsloth import FastVisionModel
+    import transformers.utils.hub as transformers_hub
+
+    from CyberSecurity_OWASP.models import CyberSecurityOWASPAction
+    from CyberSecurity_OWASP.config import load_scenario_authoring_config
+    from CyberSecurity_OWASP.reward_config import load_reward_settings
+    from CyberSecurity_OWASP.server.CyberSecurity_OWASP_environment import (
+        CybersecurityOwaspEnvironment,
+    )
+    from CyberSecurity_OWASP.server.curriculum import CurriculumController
+    from CyberSecurity_OWASP.server.scenario_cache import ScenarioCache
+    from training.trackio_utils import (
+        aggregate_episode_metrics,
+        episode_record_from_state,
+        log_reward_config,
+        log_trace_table,
+        log_trackio_metrics,
+        reward_config_trackio_config,
+        trackio_run,
+    )
+
+    model_name = _ensure_gemma4_model(model_name)
+    if int(num_generations) != 1:
+        raise ValueError("Baseline mode runs the untrained model with --num-generations 1.")
+
+    cache_env = _configure_modal_cache_env()
+    scenario_cache_env = _configure_scenario_cache_env(required=True)
+    transformers_hub.TRANSFORMERS_CACHE = cache_env["HF_HUB_CACHE"]
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        raise RuntimeError(f"HF_TOKEN is missing from the Modal secret {SECRET_NAME}.")
+    try:
+        whoami(token=hf_token)
+    except Exception as exc:
+        raise RuntimeError("HF_TOKEN could not be validated before baseline run.") from exc
+
+    os.environ["TRACKIO_SPACE_ID"] = trackio_space_id
+    os.environ["TRACKIO_PROJECT"] = trackio_project
+    reward_settings = load_reward_settings()
+    reward_tracking_config = reward_config_trackio_config(reward_settings)
+    run_name = run_name or "baseline"
+    output_dir = RUNS_DIR / run_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        cache_volume.reload()
+        print(f"Reloaded Modal model cache volume: {CACHE_VOLUME_NAME}")
+    except Exception as exc:
+        print(f"Model cache volume reload skipped: {exc!r}")
+    try:
+        scenario_cache_volume.reload()
+        print(f"Reloaded Modal scenario cache volume: {SCENARIO_CACHE_VOLUME_NAME}")
+    except Exception as exc:
+        print(f"Scenario cache volume reload skipped: {exc!r}")
+
+    settings = load_scenario_authoring_config()
+    scenario_profile = CurriculumController(settings=settings).select_profile(
+        seed=seed_start,
+        split=split,
+        requested_difficulty=difficulty,
+    )
+    resolved_difficulty = int(scenario_profile["difficulty"])
+    scenario_cache = ScenarioCache(SCENARIO_CACHE_DIR, settings=settings)
+    coverage = scenario_cache.assert_coverage(
+        split=split,
+        difficulty=resolved_difficulty,
+    )
+    entries = scenario_cache.validated_entries(
+        split=split,
+        difficulty=resolved_difficulty,
+    ) or scenario_cache.validated_entries(split=split)
+    if not entries:
+        raise RuntimeError(f"No validated scenario cache entries found for split={split!r}.")
+
+    print(f"Baseline run name: {run_name}")
+    print(f"Source mode: {source_mode}")
+    if source_mode == "public":
+        print(f"Installed CyberSecurity_OWASP from public repo: {repo_url}@{repo_branch}")
+    else:
+        print("Packaged local CyberSecurity_OWASP repo.")
+    print(f"Trackio Space: {trackio_space_id}")
+    print(f"Trackio Project: {trackio_project}")
+    print(f"Reward config: {reward_tracking_config['reward_config_id']}")
+    print(f"Reward config hash: {reward_tracking_config['reward_config_hash']}")
+    print(f"Scenario cache dir: {scenario_cache_env['CYBERSECURITY_OWASP_SCENARIO_CACHE_DIR']}")
+    print(f"Scenario cache coverage: {coverage}")
+    print(
+        "Baseline generation config: "
+        f"episodes={dataset_size}, max_episode_steps={max_steps}, "
+        f"num_generations={num_generations}, max_completion_length={max_completion_length}, "
+        f"trace_log_every={trace_log_every}"
+    )
+
+    expected_model_cache = _hf_model_cache_path(model_name)
+    print(f"Expected HF model cache path: {expected_model_cache}")
+    print(f"Model cache hit before load: {expected_model_cache.exists()}")
+    try:
+        snapshot_path = snapshot_download(
+            repo_id=model_name,
+            cache_dir=str(HF_HUB_CACHE_DIR),
+            token=hf_token,
+        )
+        print(f"Model snapshot ready: {snapshot_path}")
+        cache_volume.commit()
+    except Exception as exc:
+        print(f"Explicit model snapshot prefetch failed; loading directly. Error: {exc!r}")
+
+    model_api = FastVisionModel
+    model, tokenizer = model_api.from_pretrained(
+        model_name=model_name,
+        max_seq_length=max_seq_length,
+        load_in_4bit=False,
+        fast_inference=False,
+        cache_dir=str(HF_HUB_CACHE_DIR),
+        token=hf_token,
+    )
+    if hasattr(model_api, "for_inference"):
+        model_api.for_inference(model)
+    model.eval()
+    cache_volume.commit()
+    device = next(model.parameters()).device
+    text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+
+    def render_prompt(observation, actions: list[dict[str, Any]]) -> str:
+        recent_actions = actions[-8:]
+        return (
+            "You are the untrained baseline model for a defensive local AppSec "
+            "repair environment. Use only the listed local tools. Return exactly "
+            "one JSON object and no markdown.\n\n"
+            f"{observation.scenario_prompt}\n\n"
+            f"Current phase: {observation.phase}\n"
+            f"Available actions: {observation.available_actions}\n"
+            f"Last tool result: {observation.last_tool_result}\n"
+            f"Recent actions: {json.dumps(recent_actions, sort_keys=True)}\n\n"
+            'Required format: {"tool_name":"inspect_policy_graph","arguments":{}}'
+        )
+
+    def generate_action_text(prompt: str) -> tuple[str, list[int], list[int]]:
+        messages = [{"role": "user", "content": prompt}]
+        prompt_text = prompt
+        for candidate in (tokenizer, text_tokenizer):
+            if hasattr(candidate, "apply_chat_template"):
+                try:
+                    prompt_text = candidate.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
+                    break
+                except Exception:
+                    prompt_text = prompt
+        encode = tokenizer
+        try:
+            inputs = encode(
+                prompt_text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=max_seq_length,
+            )
+        except Exception:
+            inputs = text_tokenizer(
+                prompt_text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=max_seq_length,
+            )
+        if hasattr(inputs, "to"):
+            inputs = inputs.to(device)
+        else:
+            inputs = {
+                key: value.to(device) if hasattr(value, "to") else value
+                for key, value in inputs.items()
+            }
+        input_ids = inputs.get("input_ids")
+        input_len = int(input_ids.shape[-1]) if input_ids is not None else 0
+        pad_token_id = getattr(text_tokenizer, "pad_token_id", None)
+        if pad_token_id is None:
+            pad_token_id = getattr(text_tokenizer, "eos_token_id", None)
+        with torch.inference_mode():
+            generated = model.generate(
+                **inputs,
+                max_new_tokens=max_completion_length,
+                do_sample=False,
+                pad_token_id=pad_token_id,
+            )
+        output_ids = generated[0]
+        completion_ids = output_ids[input_len:]
+        decode = getattr(text_tokenizer, "decode", None) or getattr(tokenizer, "decode")
+        text = decode(completion_ids, skip_special_tokens=True)
+        prompt_ids = (
+            [int(item) for item in input_ids[0].detach().cpu().tolist()]
+            if input_ids is not None
+            else []
+        )
+        return text, prompt_ids, [int(item) for item in completion_ids.detach().cpu().tolist()]
+
+    def action_from_completion(raw_text: str) -> tuple[CyberSecurityOWASPAction, str | None]:
+        loaded = _extract_first_json_object(raw_text)
+        if loaded is None:
+            return CyberSecurityOWASPAction(tool_name="noop", arguments={}), "invalid_json"
+        arguments = loaded.get("arguments", {})
+        if not isinstance(arguments, dict):
+            arguments = {}
+        payload = {
+            "tool_name": loaded.get("tool_name", "noop"),
+            "arguments": arguments,
+        }
+        try:
+            return CyberSecurityOWASPAction(**payload), None
+        except Exception as exc:
+            return (
+                CyberSecurityOWASPAction(tool_name="noop", arguments={}),
+                f"invalid_action_schema: {exc}",
+            )
+
+    episode_records: list[dict[str, Any]] = []
+    raw_traces: list[dict[str, Any]] = []
+    invalid_model_outputs = 0
+    generation_started = time.monotonic()
+    config = {
+        "base_model": model_name,
+        "algo": "baseline",
+        "difficulty": difficulty,
+        "split": split,
+        "max_episode_steps": max_steps,
+        "dataset_size": dataset_size,
+        "num_generations": num_generations,
+        "max_completion_length": max_completion_length,
+        "git_sha": git_sha,
+        **reward_tracking_config,
+    }
+
+    with trackio_run(
+        run_name=run_name,
+        run_type="baseline",
+        config=config,
+        project=trackio_project,
+        space_id=trackio_space_id,
+        group="baseline",
+        auto_log_gpu=True,
+    ):
+        log_reward_config(reward_settings, step=0)
+        for episode_index in range(max(1, int(dataset_size))):
+            entry = entries[(seed_start + episode_index) % len(entries)]
+            env = CybersecurityOwaspEnvironment()
+            try:
+                observation = env.reset(
+                    seed=int(entry["seed"]),
+                    split=str(entry["split"]),
+                    difficulty=int(entry["difficulty"]),
+                )
+                env.state.max_steps = int(max_steps)
+                actions: list[dict[str, Any]] = []
+                model_steps: list[dict[str, Any]] = []
+                prompt_token_count = 0
+                completion_token_count = 0
+
+                for step_index in range(int(max_steps)):
+                    if observation.done:
+                        break
+                    prompt = render_prompt(observation, actions)
+                    raw_text, prompt_ids, completion_ids = generate_action_text(prompt)
+                    prompt_token_count += len(prompt_ids)
+                    completion_token_count += len(completion_ids)
+                    action, invalid_reason = action_from_completion(raw_text)
+                    if invalid_reason:
+                        invalid_model_outputs += 1
+                    observation = env.step(action)
+                    action_dump = action.model_dump()
+                    actions.append(action_dump)
+                    model_steps.append(
+                        {
+                            "step": step_index + 1,
+                            "raw_completion": raw_text,
+                            "action": action_dump,
+                            "invalid_model_output": invalid_reason,
+                            "observation_message": observation.message,
+                            "reward": observation.reward,
+                            "done": observation.done,
+                        }
+                    )
+
+                env.state.completion_tokens = completion_token_count
+                env.state.metrics["prompt_tokens"] = prompt_token_count
+                env.state.metrics["completion_tokens"] = completion_token_count
+                final_observation = observation.model_dump()
+                record = episode_record_from_state(
+                    env.state,
+                    run_context={
+                        "base_model": model_name,
+                        "algo": "baseline",
+                        "reward_version": "reward_v2",
+                        "env_version": "0.1.0",
+                        **reward_tracking_config,
+                    },
+                    final_observation=final_observation,
+                )
+                record.update(
+                    {
+                        "reward_total": float(env.state.accumulated_reward),
+                        "success": bool(env.state.success),
+                        "episode_length": int(env.state.step_count),
+                        "invalid_model_output_count": sum(
+                            1 for item in model_steps if item["invalid_model_output"]
+                        ),
+                        "prompt_tokens": prompt_token_count,
+                        "completion_tokens": completion_token_count,
+                    }
+                )
+                episode_records.append(record)
+                raw_traces.append(
+                    {
+                        "episode_index": episode_index,
+                        "task_id": env.state.task_id,
+                        "seed": env.state.seed,
+                        "split": env.state.split,
+                        "difficulty": env.state.difficulty,
+                        "domain": env.state.domain,
+                        "bug_family": env.state.bug_family,
+                        "steps": model_steps,
+                    }
+                )
+            finally:
+                env.close()
+
+            metrics = aggregate_episode_metrics(episode_records)
+            metrics.update(
+                {
+                    "baseline/episode_count": float(len(episode_records)),
+                    "baseline/reward_total_mean": statistics.mean(
+                        float(item.get("reward_total", 0.0)) for item in episode_records
+                    ),
+                    "baseline/success_rate": statistics.mean(
+                        1.0 if item.get("success") else 0.0 for item in episode_records
+                    ),
+                    "baseline/invalid_model_output_rate": invalid_model_outputs
+                    / max(1.0, sum(float(item.get("episode_length", 0)) for item in episode_records)),
+                    "baseline/num_generations": float(num_generations),
+                    "baseline/max_episode_steps": float(max_steps),
+                    "baseline/max_completion_length": float(max_completion_length),
+                }
+            )
+            log_trackio_metrics(metrics, step=episode_index + 1)
+            if trace_log_every > 0 and (
+                episode_index == 0 or (episode_index + 1) % trace_log_every == 0
+            ):
+                log_trace_table(
+                    [episode_records[-1]],
+                    table_name="baseline_traces",
+                    step=episode_index + 1,
+                )
+
+    elapsed_s = time.monotonic() - generation_started
+    summary = {
+        "run_name": run_name,
+        "trackio_space_id": trackio_space_id,
+        "trackio_project": trackio_project,
+        "model_name": model_name,
+        "dataset_size": len(episode_records),
+        "max_episode_steps": int(max_steps),
+        "difficulty": int(difficulty),
+        "split": split,
+        "num_generations": int(num_generations),
+        "max_completion_length": int(max_completion_length),
+        "mean_reward": (
+            statistics.mean(float(item.get("reward_total", 0.0)) for item in episode_records)
+            if episode_records
+            else 0.0
+        ),
+        "success_rate": (
+            statistics.mean(1.0 if item.get("success") else 0.0 for item in episode_records)
+            if episode_records
+            else 0.0
+        ),
+        "invalid_model_output_count": int(invalid_model_outputs),
+        "elapsed_s": elapsed_s,
+        **reward_tracking_config,
+    }
+    artifact_path = output_dir / "baseline_rollouts.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "summary": summary,
+                "episodes": episode_records,
+                "raw_traces": raw_traces,
+            },
+            indent=2,
+            sort_keys=True,
+            default=str,
+        ),
+        encoding="utf-8",
+    )
+    volume.commit()
+    cache_volume.commit()
+    scenario_cache_volume.commit()
+    print(f"Baseline artifact saved to {artifact_path}")
+    return {**summary, "artifact_path": str(artifact_path)}
+
+
+@app.function(
+    image=training_image,
+    gpu="L4",
+    timeout=GRPO_TRAINING_TIMEOUT_SECONDS,
+    volumes={RUNS_DIR: volume, CACHE_DIR: cache_volume, SCENARIO_CACHE_DIR: scenario_cache_volume},
+    secrets=secrets,
+)
 def train_cybersecurity_owasp_grpo(
     env_repo_id: str = "",
     output_repo_id: str = "",
@@ -580,16 +1061,21 @@ def train_cybersecurity_owasp_grpo(
     from CyberSecurity_OWASP.server.CyberSecurity_OWASP_environment import (
         CybersecurityOwaspEnvironment,
     )
-    from CyberSecurity_OWASP.reward_config import compute_token_penalty
+    from CyberSecurity_OWASP.reward_config import (
+        compute_token_penalty,
+        load_reward_settings,
+    )
     from CyberSecurity_OWASP.server.curriculum import CurriculumController
     from CyberSecurity_OWASP.server.scenario_cache import ScenarioCache
     from training.trackio_utils import (
         aggregate_episode_metrics,
         episode_record_from_state,
         episode_trace_fingerprint,
+        log_reward_config,
         log_gpu_metrics,
         log_trace_table,
         log_trackio_metrics,
+        reward_config_trackio_config,
         train_metric_aliases,
     )
     from training.grpo_curriculum import (
@@ -625,6 +1111,8 @@ def train_cybersecurity_owasp_grpo(
     os.environ["TRACKIO_SPACE_ID"] = trackio_space_id
     os.environ["TRACKIO_PROJECT"] = trackio_project
     os.environ.setdefault("CYBERSECURITY_OWASP_REWARD_MODE", "dense_train")
+    reward_settings = load_reward_settings()
+    reward_tracking_config = reward_config_trackio_config(reward_settings)
 
     model_slug = model_name.replace("/", "-")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -761,6 +1249,10 @@ def train_cybersecurity_owasp_grpo(
                     "scenario_group_id": self.scenario_group_id,
                     "scenario_assignment": dict(self.scenario_assignment),
                     "scenario_prompt_length": len(obs.scenario_prompt),
+                    "reward_config_id": reward_tracking_config["reward_config_id"],
+                    "reward_config_hash": reward_tracking_config["reward_config_hash"],
+                    "reward_stage": reward_tracking_config["reward_stage"],
+                    "reward_mode": reward_tracking_config["reward_mode"],
                 }
             )
             return obs.scenario_prompt
@@ -1012,6 +1504,7 @@ def train_cybersecurity_owasp_grpo(
                     "algo": "grpo",
                     "reward_version": "reward_v2",
                     "env_version": "0.1.0",
+                    **reward_tracking_config,
                 },
             )
             record.update(
@@ -1116,6 +1609,10 @@ def train_cybersecurity_owasp_grpo(
                         "trace_fingerprint": fingerprint,
                         "num_generations": num_generations,
                         "run_name": run_name,
+                        "reward_config_id": reward_tracking_config["reward_config_id"],
+                        "reward_config_hash": reward_tracking_config["reward_config_hash"],
+                        "reward_stage": reward_tracking_config["reward_stage"],
+                        "reward_mode": reward_tracking_config["reward_mode"],
                     }
                 )
                 try:
@@ -1148,6 +1645,7 @@ def train_cybersecurity_owasp_grpo(
     class TrackioSystemMetricsCallback(TrainerCallback):
         def on_train_begin(self, args, state, control, **kwargs):
             try:
+                reward_summary = log_reward_config(reward_settings, step=int(state.global_step or 0))
                 metrics = log_gpu_metrics(step=int(state.global_step or 0))
                 log_trackio_metrics(
                     {
@@ -1160,8 +1658,13 @@ def train_cybersecurity_owasp_grpo(
                     },
                     step=int(state.global_step or 0),
                 )
+                print(
+                    "Trackio reward config logged: "
+                    f"{reward_summary['reward_config_id']} "
+                    f"({reward_summary['reward_config_hash']})"
+                )
             except Exception as exc:
-                print(f"Trackio GPU metrics initialization skipped: {exc!r}")
+                print(f"Trackio initialization metrics skipped: {exc!r}")
                 return control
             if metrics:
                 system_summary = ", ".join(
@@ -1199,6 +1702,8 @@ def train_cybersecurity_owasp_grpo(
     print(f"Trackio Project: {trackio_project}")
     print(f"Output repo: {output_repo_id}")
     print(f"Run name: {run_name}")
+    print(f"Reward config: {reward_tracking_config['reward_config_id']}")
+    print(f"Reward config hash: {reward_tracking_config['reward_config_hash']}")
     print(f"Model cache volume: {CACHE_VOLUME_NAME}")
     print(f"Scenario cache volume: {SCENARIO_CACHE_VOLUME_NAME}")
     print(f"Scenario cache dir: {scenario_cache_env['CYBERSECURITY_OWASP_SCENARIO_CACHE_DIR']}")
@@ -1451,6 +1956,7 @@ def train_cybersecurity_owasp_grpo(
         "push_to_hub": push_to_hub,
         "scenario_cache_volume": SCENARIO_CACHE_VOLUME_NAME,
         "scenario_cache_mode": "require",
+        **reward_tracking_config,
     }
 
 
@@ -1506,8 +2012,46 @@ def main(
         result = check_training_imports.remote()
         print(result)
         return
+    if mode == "baseline":
+        if int(num_generations) != 1:
+            raise ValueError("baseline mode expects --num-generations 1.")
+        trace_log_every = max(0, int(trace_log_every))
+        run_name = run_name or "baseline"
+        preflight = verify_modal_scenario_cache_for_training.remote(
+            split=split,
+            difficulty=difficulty,
+            dataset_size=dataset_size,
+            seed_start=seed_start,
+        )
+        print(f"CPU scenario cache preflight passed: {preflight}")
+        kwargs = dict(
+            max_steps=max_steps,
+            dataset_size=dataset_size,
+            difficulty=difficulty,
+            split=split,
+            model_name=model_name,
+            max_seq_length=max_seq_length,
+            max_completion_length=max_completion_length,
+            trackio_space_id=trackio_space_id,
+            trackio_project=trackio_project,
+            num_generations=num_generations,
+            trace_log_every=trace_log_every,
+            seed_start=seed_start,
+            git_sha=git_sha,
+            run_name=run_name,
+            source_mode=source_mode,
+            repo_url=repo_url,
+            repo_branch=repo_branch,
+        )
+        if detach:
+            call = run_cybersecurity_owasp_baseline.spawn(**kwargs)
+            print(f"Spawned Modal baseline call: {call.object_id}")
+        else:
+            result = run_cybersecurity_owasp_baseline.remote(**kwargs)
+            print(f"Baseline result: {result}")
+        return
     if mode != "train":
-        raise ValueError("mode must be 'prepare-cache', 'train', or 'config'")
+        raise ValueError("mode must be 'prepare-cache', 'train', 'baseline', or 'config'")
 
     (
         resolved_gradient_accumulation_steps,

@@ -174,6 +174,19 @@ TRACE_TABLE_COLUMNS = (
     "terminal_reason",
 )
 
+REWARD_CONFIG_TABLE_COLUMNS = (
+    "key",
+    "value",
+    "stage_value",
+    "cap",
+    "threshold",
+    "severe_threshold",
+    "terminate",
+    "description",
+)
+
+REWARD_STAGES_FOR_TRACKING = ("early", "middle", "late", "final")
+
 SENSITIVE_TEXT_PATTERNS = (
     re.compile(r"hf_[A-Za-z0-9_]+"),
     re.compile(r"(?i)(secret|token|password|api[_-]?key)\s*[:=]\s*[^,\s}]+"),
@@ -263,6 +276,10 @@ def _mean(values: Sequence[float]) -> float:
 def _stable_hash(value: Any, length: int = 16) -> str:
     text = json.dumps(value, sort_keys=True, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:length]
+
+
+def _metric_safe(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_")
 
 
 def _redact_text(value: Any, limit: int = 800) -> str:
@@ -524,6 +541,10 @@ def episode_record_from_state(
         "run/base_model": context.get("base_model", context.get("run/base_model", "")),
         "run/algo": context.get("algo", context.get("run/algo", "")),
         "run/reward_version": context.get("reward_version", "reward_v2"),
+        "run/reward_config_id": context.get("reward_config_id", ""),
+        "run/reward_config_hash": context.get("reward_config_hash", ""),
+        "run/reward_mode": context.get("reward_mode", ""),
+        "run/reward_stage": context.get("reward_stage", ""),
         "run/env_version": context.get("env_version", "0.1.0"),
         "episode_id": getattr(state, "episode_id", ""),
         "task_id": getattr(state, "task_id", ""),
@@ -926,7 +947,7 @@ def log_trace_table(
     rows = trace_table_rows(episodes)
     table = trackio.Table(
         columns=list(TRACE_TABLE_COLUMNS),
-        rows=[[row.get(column, "") for column in TRACE_TABLE_COLUMNS] for row in rows],
+        data=[[row.get(column, "") for column in TRACE_TABLE_COLUMNS] for row in rows],
         allow_mixed_types=True,
     )
     if step is None:
@@ -1051,6 +1072,132 @@ def log_trackio_metrics(metrics: dict[str, Any], step: int | None = None) -> Non
         trackio.log(numeric)
     else:
         trackio.log(numeric, step=step)
+
+
+def reward_config_trackio_config(settings: Any | None = None) -> dict[str, Any]:
+    """Return nonnumeric reward config identity fields for Trackio run config."""
+
+    try:
+        from CyberSecurity_OWASP.reward_config import (
+            load_reward_settings,
+            reward_config_run_config,
+        )
+    except ImportError:  # pragma: no cover
+        from reward_config import load_reward_settings, reward_config_run_config
+
+    settings = settings or load_reward_settings()
+    return reward_config_run_config(settings)
+
+
+def reward_config_scalar_metrics(settings: Any | None = None) -> dict[str, float]:
+    """Return numeric reward config values as scalar Trackio metrics."""
+
+    try:
+        from CyberSecurity_OWASP.reward_config import (
+            load_reward_settings,
+            reward_config_summary,
+        )
+    except ImportError:  # pragma: no cover
+        from reward_config import load_reward_settings, reward_config_summary
+
+    settings = settings or load_reward_settings()
+    summary = reward_config_summary(settings)
+    metrics = {
+        "reward_config/shaping_weight/resolved": _float(
+            summary.get("reward_shaping_weight")
+        )
+    }
+    for row in summary.get("reward_entries", []):
+        key = _metric_safe(str(row.get("key", "")))
+        if not key:
+            continue
+        for field in (
+            "value",
+            "stage_value",
+            "resolved",
+            "cap",
+            "threshold",
+            "severe_threshold",
+            "terminate",
+        ):
+            value = row.get(field)
+            if isinstance(value, (int, float, bool)):
+                metrics[f"reward_config/{key}/{field}"] = _float(value)
+
+        raw_entry = settings.entry(str(row.get("key", "")))
+        for extra_key, value in raw_entry.items():
+            if extra_key in {
+                "description",
+                "value",
+                "cap",
+                "threshold",
+                "threshold_lines",
+                "severe_threshold",
+                "severe_threshold_lines",
+                "terminate",
+                *REWARD_STAGES_FOR_TRACKING,
+            }:
+                continue
+            if isinstance(value, (int, float, bool)):
+                metrics[
+                    f"reward_config/{key}/{_metric_safe(str(extra_key))}"
+                ] = _float(value)
+    return metrics
+
+
+def log_reward_config(
+    settings: Any | None = None,
+    *,
+    step: int | None = 0,
+    table_name: str = "reward_config",
+) -> dict[str, Any]:
+    """Log reward config scalar values and a Trackio table for one run."""
+
+    try:
+        from CyberSecurity_OWASP.reward_config import (
+            load_reward_settings,
+            reward_config_summary,
+        )
+    except ImportError:  # pragma: no cover
+        from reward_config import load_reward_settings, reward_config_summary
+
+    settings = settings or load_reward_settings()
+    summary = reward_config_summary(settings)
+
+    trackio = _load_trackio()
+    config_payload = reward_config_trackio_config(settings)
+    active_config = getattr(trackio, "config", None)
+    if isinstance(active_config, dict):
+        active_config.update(config_payload)
+    context_vars = getattr(trackio, "context_vars", None)
+    current_run_var = getattr(context_vars, "current_run", None)
+    if current_run_var is not None:
+        current_run = current_run_var.get()
+        if current_run is not None and isinstance(getattr(current_run, "config", None), dict):
+            current_run.config.update(config_payload)
+            # Force Trackio to persist the enriched run config even if the
+            # trainer or auto GPU logger emitted an earlier config-only log.
+            current_run._config_logged = False
+    log_trackio_metrics(reward_config_scalar_metrics(settings), step=step)
+
+    rows = []
+    for entry in summary.get("reward_entries", []):
+        rows.append(
+            [
+                entry.get(column, "")
+                for column in REWARD_CONFIG_TABLE_COLUMNS
+            ]
+        )
+    table = trackio.Table(
+        columns=list(REWARD_CONFIG_TABLE_COLUMNS),
+        data=rows,
+        allow_mixed_types=True,
+    )
+    if step is None:
+        trackio.log({table_name: table})
+    else:
+        trackio.log({table_name: table}, step=step)
+    return summary
 
 
 def collect_torch_gpu_metrics() -> dict[str, float]:

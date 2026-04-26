@@ -131,6 +131,7 @@ def run_ephemeral_smoke(
     _configure_scenario_cache_env(required=True)
     from CyberSecurity_OWASP.models import CyberSecurityOWASPAction
     from CyberSecurity_OWASP.config import load_scenario_authoring_config
+    from CyberSecurity_OWASP.reward_config import load_reward_settings
     from CyberSecurity_OWASP.server.CyberSecurity_OWASP_environment import (
         CybersecurityOwaspEnvironment,
     )
@@ -140,7 +141,9 @@ def run_ephemeral_smoke(
         aggregate_episode_metrics,
         episode_record_from_state,
         log_episode_batch,
+        log_reward_config,
         log_trackio_metrics,
+        reward_config_trackio_config,
         trace_table_rows,
         trackio_run,
     )
@@ -162,10 +165,13 @@ def run_ephemeral_smoke(
 
     baseline = []
     oracle = []
+    reward_settings = load_reward_settings()
+    reward_tracking_config = reward_config_trackio_config(reward_settings)
     run_context = {
         "algo": "modal_ephemeral_smoke",
         "reward_version": "reward_v2",
         "env_version": "0.1.0",
+        **reward_tracking_config,
     }
 
     for offset in range(episodes):
@@ -274,6 +280,7 @@ def run_ephemeral_smoke(
         "tracking_trace_rows": trace_table_rows(episode_records),
         "baseline": baseline,
         "oracle": oracle,
+        **reward_tracking_config,
     }
     with trackio_run(
         run_name=run_name,
@@ -284,9 +291,11 @@ def run_ephemeral_smoke(
             "episodes": episodes,
             "seed_start": seed_start,
             "mode": "smoke",
+            **reward_tracking_config,
         },
         group="smoke",
     ):
+        log_reward_config(reward_settings, step=0)
         logged_metrics = log_episode_batch(episode_records, step=0)
         log_trackio_metrics(
             {

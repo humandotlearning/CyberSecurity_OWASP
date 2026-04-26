@@ -1079,6 +1079,62 @@ Then scale gradually:
 
 For high-volume rollouts, prefer local Docker or Uvicorn over remote HF Spaces because local WebSocket sessions reduce latency and avoid Space limits.
 
+### Parallel Modal training runs
+
+Parallel Modal GRPO runs are allowed only when they do not overwrite each
+other's evidence, checkpoints, scenario assignments, or Hub outputs.
+
+Before launching another run:
+
+1. Check active Modal apps:
+
+```bash
+uv run --extra modal modal app list
+```
+
+2. If a `CyberSecurity_OWASP` app is active, inspect it before launching:
+
+```bash
+uv run --extra modal modal app logs <app-id>
+```
+
+3. Use Modal CLI-level detach and the launcher detach flag together, otherwise
+the spawned GPU function may stop when the local entrypoint exits:
+
+```bash
+uv run --extra modal modal run --detach scripts/modal_train_grpo.py \
+  --max-steps 300 \
+  --dataset-size 64 \
+  --num-generations 8 \
+  --max-completion-length 768 \
+  --difficulty 0 \
+  --trace-log-every 10 \
+  --seed-start 10000 \
+  --detach
+```
+
+When running jobs in parallel:
+
+- Give every run a distinct `--seed-start` range, spaced by at least 10,000
+  seeds unless a smaller controlled comparison is intentional.
+- Keep `CYBERSECURITY_OWASP_SCENARIO_CACHE_MODE=require`; do not compile
+  scenarios in the training hot path.
+- Do not run `prepare-cache --cache-force` while any training job is active.
+  Scenario-cache writes can invalidate or race training resets.
+- Leave `--push-to-hub` off for parallel experiments unless each run has a
+  unique `--output-repo-id`.
+- Keep run names unique. The launcher timestamp normally handles this; set an
+  explicit `RUN_NAME` only when it is globally unique.
+- Use different Trackio run names but the same Trackio Space so reward,
+  throughput, GPU utilization, invalid-action rate, and success metrics remain
+  comparable.
+- Treat the shared Modal volumes as shared infrastructure: model cache and
+  scenario cache should be read-only during parallel training; run/checkpoint
+  outputs must live under each run's unique output directory.
+- If the goal is a clean reward comparison, keep model, difficulty,
+  `dataset-size`, `num-generations`, `max-completion-length`, and reward config
+  fixed, changing only `seed-start` or the one hyperparameter being tested.
+
 ---
 
 ## README requirements

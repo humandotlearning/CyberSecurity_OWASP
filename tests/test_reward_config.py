@@ -4,7 +4,11 @@ import pytest
 
 from CyberSecurity_OWASP.reward_config import (
     compute_token_penalty,
+    flatten_reward_config,
     load_reward_settings,
+    reward_config_hash,
+    reward_config_run_config,
+    reward_config_summary,
 )
 
 
@@ -30,6 +34,38 @@ def test_reward_config_env_overrides(monkeypatch):
     assert settings.stage == "late"
     assert settings.shaping_weight == 0.25
     assert compute_token_penalty(850, settings) == -0.5
+
+
+def test_reward_config_hash_and_flattened_values_are_deterministic(monkeypatch):
+    monkeypatch.setenv("CYBERSECURITY_OWASP_REWARD_MODE", "dense_train")
+    monkeypatch.setenv("CYBERSECURITY_OWASP_REWARD_STAGE", "middle")
+
+    settings = load_reward_settings()
+    first_hash = reward_config_hash(settings)
+    second_hash = reward_config_hash(load_reward_settings())
+    summary = reward_config_summary(settings)
+    run_config = reward_config_run_config(settings)
+    rows = {row["key"]: row for row in flatten_reward_config(settings)}
+
+    assert first_hash == second_hash
+    assert len(first_hash) == 64
+    assert summary["reward_config_hash"] == first_hash
+    assert summary["reward_config_id"].endswith(first_hash[:12])
+    assert run_config["reward_config_hash"] == first_hash
+    assert run_config["reward_mode"] == "dense_train"
+    assert run_config["reward_stage"] == "middle"
+    assert run_config["reward_config_values"]["policy_inspected"]["value"] == 0.30
+    assert run_config["reward_config_values"]["shaping_weight"]["stage_value"] == 0.7
+    assert run_config["reward_config__policy_inspected__value"] == 0.30
+    assert run_config["reward_config__shaping_weight__stage_value"] == 0.7
+    assert "policy_inspected" in run_config["reward_config_values_json"]
+    assert rows["policy_inspected"]["value"] == 0.30
+    assert rows["shaping_weight"]["stage_value"] == 0.7
+    assert rows["shaping_weight"]["resolved"] == 0.7
+    assert rows["step_penalty"]["stage_value"] == -0.01
+    assert rows["oversized_patch"]["threshold"] == 80
+    assert rows["oversized_patch"]["severe_threshold"] == 180
+    assert rows["hidden_file_probe"]["terminate"] is True
 
 
 def test_reward_config_rejects_missing_descriptions(monkeypatch):

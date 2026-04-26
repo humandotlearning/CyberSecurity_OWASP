@@ -211,6 +211,20 @@ uv run python scripts/track_pytest.py tests
 
 Evaluation summaries saved through `training.eval_before_after.save_eval_summary(...)`, Modal smoke runs, and GRPO training configs all initialize Trackio runs with CyberSecurity_OWASP run names.
 
+Training, baseline, and smoke runs also log the effective reward config at step
+0. In Trackio, open **Media & Tables** and select the `reward_config` table to
+see the actual values for each reward key, including stage-specific values,
+caps, thresholds, terminate flags, and descriptions. Scalar metrics under
+`reward_config/<key>/<field>` expose the same numeric values for plotting and
+filtering, for example `reward_config/policy_inspected/value` and
+`reward_config/shaping_weight/resolved`.
+
+Each run config includes `reward_config_id`, `reward_config_hash`,
+`reward_config_source`, `reward_mode`, and `reward_stage`. For manual ablations,
+compare runs with the same scenario/model settings and different
+`reward_config_hash` values to see which reward weights produced each training
+curve.
+
 ## Modal Ephemeral Runs
 
 Modal Labs support is kept in a separate launcher script so the local OpenEnv server and core training scaffold stay unchanged.
@@ -306,6 +320,59 @@ be divisible by `num_generations`; the launcher validates this before the GPU
 container starts. Scalar Trackio metrics still log every reward callback, while
 sample trace tables and Trace objects are throttled by `--trace-log-every`
 (`1` restores every-callback logging, `0` disables trace artifacts).
+
+### Parallel Modal GRPO Runs
+
+Parallel Modal GRPO runs are safe when each run has its own seed range, run
+name, and output target, while the shared cache volumes remain read-only.
+Before launching another job, check what is already active:
+
+```bash
+uv run --extra modal modal app list
+uv run --extra modal modal app logs <app-id>
+```
+
+Launch long-running parallel jobs with both Modal CLI detach and the launcher
+detach flag. The CLI-level `--detach` keeps the remote function alive after the
+local entrypoint exits; the launcher `--detach` prevents the parent Modal
+function from waiting on the GPU call.
+
+```bash
+uv run --extra modal modal run --detach scripts/modal_train_grpo.py \
+  --max-steps 300 \
+  --dataset-size 64 \
+  --num-generations 8 \
+  --max-completion-length 768 \
+  --difficulty 0 \
+  --trace-log-every 10 \
+  --seed-start 10000 \
+  --detach
+```
+
+For multiple concurrent experiments:
+
+- Use a unique `--seed-start` range for every run, normally spaced by at least
+  10,000 seeds.
+- Keep `CYBERSECURITY_OWASP_SCENARIO_CACHE_MODE=require`; do not compile
+  scenarios during training.
+- Do not run `prepare-cache --cache-force` while training jobs are active.
+- Keep `--push-to-hub` disabled unless each run has a unique
+  `--output-repo-id`.
+- Let the launcher generate unique timestamped Trackio run names, or set an
+  explicit `RUN_NAME` only when it is globally unique.
+- Use the same Trackio Space/project for comparable metrics, but never reuse a
+  run name.
+- Treat `CyberSecurity_OWASP-model-cache` and
+  `CyberSecurity_OWASP-scenario-cache` as shared read-mostly infrastructure
+  during training. Run outputs and checkpoints should stay under each run's
+  unique output directory.
+
+If a Windows shell fails with a Unicode `charmap` encoding error during Modal
+startup, rerun with UTF-8 enabled for that command:
+
+```powershell
+$env:PYTHONIOENCODING='utf-8'; $env:PYTHONUTF8='1'; uv run --extra modal modal run --detach scripts/modal_train_grpo.py --max-steps 300 --dataset-size 64 --num-generations 4 --max-completion-length 768 --difficulty 0 --trace-log-every 10 --seed-start 60000 --detach
+```
 
 If running from a public repository and you do not want Modal to package the
 local workspace, use public source mode:
