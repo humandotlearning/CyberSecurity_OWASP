@@ -1088,7 +1088,11 @@ def train_cybersecurity_owasp_grpo(
     from peft import PeftModel
     from transformers import TrainerCallback
     from trl import GRPOConfig, GRPOTrainer, clone_chat_template
-    from trl.chat_template_utils import add_response_schema
+    try:
+        from trl.chat_template_utils import add_response_schema
+    except ImportError:
+        def add_response_schema(tokenizer):
+            return tokenizer
 
     import trackio
 

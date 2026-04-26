@@ -376,7 +376,11 @@ def train_cybersecurity_owasp_sft(
     from datasets import load_dataset
     from huggingface_hub import snapshot_download
     from trl import SFTConfig, SFTTrainer
-    from trl.chat_template_utils import add_response_schema
+    try:
+        from trl.chat_template_utils import add_response_schema
+    except ImportError:
+        def add_response_schema(tokenizer):
+            return tokenizer
     from unsloth import FastVisionModel
 
     model_name = _ensure_gemma4_model(model_name)
@@ -478,6 +482,7 @@ def train_cybersecurity_owasp_sft(
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "learning_rate": learning_rate,
         "optim": "adamw_8bit",
+        "dataset_num_proc": None,
         "logging_steps": 1,
         "logging_first_step": True,
         "save_steps": max(10, max_steps) if max_steps > 0 else 100,
@@ -485,9 +490,8 @@ def train_cybersecurity_owasp_sft(
         "project": trackio_project,
         "trackio_space_id": trackio_space_id,
         "run_name": run_name,
-        "assistant_only_loss": True,
-        "packing": True,
-        "packing_strategy": "bfd",
+        "assistant_only_loss": False,
+        "packing": False,
         "bf16": True,
         "tf32": True,
         "gradient_checkpointing": True,

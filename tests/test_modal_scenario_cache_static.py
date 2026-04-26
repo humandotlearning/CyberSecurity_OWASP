@@ -55,9 +55,10 @@ def test_modal_sft_defaults_match_300_episode_fast_handoff_plan():
     assert source.count("max_steps: int = -1") >= 2
     assert source.count("per_device_train_batch_size: int = 4") >= 2
     assert source.count("gradient_accumulation_steps: int = 4") >= 2
-    assert '"assistant_only_loss": True' in source
-    assert '"packing": True' in source
-    assert '"packing_strategy": "bfd"' in source
+    assert '"assistant_only_loss": False' in source
+    assert '"packing": False' in source
+    assert '"packing_strategy": "bfd"' not in source
+    assert '"dataset_num_proc": None' in source
     assert '"bf16": True' in source
     assert '"tf32": True' in source
     assert '"hub_strategy": "every_save"' in source

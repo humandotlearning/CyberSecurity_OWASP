@@ -331,11 +331,14 @@ uv run --extra modal modal run --detach scripts/modal_train_sft.py \
 `scripts/modal_train_sft.py` re-checks the JSONL reward metadata locally before
 upload and again inside Modal before loading the model. It refuses to start SFT
 unless all required curriculum difficulties are represented and the verifier
-reward metadata passes. The default SFT config trains one full epoch
-(`--max-steps -1`) with packed assistant-only loss, bf16/tf32, LoRA rank 32,
-and Modal GPU fallback `H200 -> H100 -> A100-80GB -> L40S`. A warm run for the
-300-episode dataset should usually finish in about 15-45 minutes; first image
-or model-cache builds can push that closer to 35-75 minutes.
+reward metadata passes. The default SFT config trains the full dataset
+(`--max-steps -1`) with bf16/tf32, LoRA rank 32, and Modal GPU fallback
+`H200 -> H100 -> A100-80GB -> L40S`. TRL does not support packing or
+assistant-only loss for the Gemma 4 vision-language loader, so both remain
+disabled for this model. Dataset preprocessing disables multiprocessing because
+the Gemma/Unsloth config is not pickle-safe under TRL dataset workers. A warm run
+for the 300-400 episode dataset should usually finish in about 20-60 minutes;
+first image or model-cache builds can push that closer to 45-90 minutes.
 
 Continue GRPO from the SFT LoRA:
 
