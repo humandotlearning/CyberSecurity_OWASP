@@ -18,6 +18,8 @@
     .diamond { stroke-width: 2; }
     .arrow { stroke: #0f172a; stroke-width: 4; fill: none; marker-end: url(#arrow); stroke-linecap: round; stroke-linejoin: round; }
     .dash { stroke-dasharray: 10 10; }
+    svg { background: #ffffff; }
+    .background { fill: #ffffff; }
     .label { font-size: 14px; font-weight: 700; fill: #0f172a; paint-order: stroke; stroke: #ffffff; stroke-width: 5; stroke-linejoin: round; }
   </style>
   <defs>
@@ -25,6 +27,8 @@
       <path d="M0,0 L18,7 L0,14 Z" fill="#0f172a" />
     </marker>
   </defs>
+
+  <rect width="1500" height="900" class="background" />
 
   <text x="50" y="52" class="title">CyberSecurity_OWASP Cached RL Training Flow</text>
   <text x="50" y="80" class="subtitle">Cache-first rollouts keep training deterministic, measurable, and safe from reward hacking shortcuts.</text>
