@@ -16,6 +16,27 @@ So I built **CyberSecurity_OWASP** around a different idea:
 
 The goal is not another benchmark where an LLM answers security trivia. The goal is an OpenEnv environment where a small open model can learn an actual defensive workflow: inspect an application, understand the intended authorization policy, discover a broken access control bug, patch the code, and preserve legitimate behavior.
 
+## Ablations: Where the Reward Started Working
+
+I ran a lot of short ablations, and the full trail is in the [CyberSecurity_OWASP Trackio dashboard](https://huggingface.co/spaces/Humanlearning/CyberSecurity_OWASP-trackio).
+
+![CyberSecurity_OWASP reward ablations](../assets/trackio_reward_ablations.png)
+
+The first plain-RL rubric looked promising on paper, but the agent learned a cheap loop: inspect the policy, collect shaping reward, and stall. Tightening the rubric helped, but reward still climbed too slowly.
+
+The useful jump came from changing the recipe: first teach the model successful trajectories with SFT, then run GRPO on that LoRA. With the updated rubric, the SFT-warm-started agent spends less time gaming the interface and more time doing the real job: find the auth bug, patch it, and keep valid behavior alive.
+
+The plot is backed by repeatable scripts, not a one-off notebook. `scripts/modal_train_sft.py` trains the warm-start LoRA on verified trajectories, `scripts/modal_train_grpo.py` continues from that adapter with live OpenEnv rewards, and `scripts/launch_reward_ablations.ps1` launches comparable rubric trials using the YAML configs in `training/configs/reward_ablations/`.
+
+The core handoff is intentionally simple:
+
+```bash
+uv run --extra modal modal run --detach scripts/modal_train_sft.py --push-to-hub --detach
+uv run --extra modal modal run --detach scripts/modal_train_grpo.py \
+  --initial-adapter-repo-id Humanlearning/CyberSecurity_OWASP-unsloth-gemma-4-e2b-it-sft-lora \
+  --max-steps 300 --difficulty 0 --trace-log-every 10 --detach
+```
+
 ## Why OWASP A01?
 
 The first target is **OWASP A01:2025 - Broken Access Control**.
