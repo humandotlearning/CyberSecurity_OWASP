@@ -31,12 +31,18 @@ def test_modal_ephemeral_smoke_uses_required_scenario_cache():
 def test_modal_training_is_pinned_to_gemma4_e2b():
     source = (ROOT / "scripts" / "modal_train_grpo.py").read_text(encoding="utf-8")
 
+    assert 'GRPO_GPU_FALLBACK = ["L40S", "L4"]' in source
+    assert "gpu=GRPO_GPU_FALLBACK" in source
     assert "DEFAULT_GEMMA_MODEL = \"unsloth/gemma-4-E2B-it\"" in source
     assert "def _ensure_gemma4_model(model_name: str) -> str:" in source
     assert "model_name = _ensure_gemma4_model(model_name)" in source
     assert "from unsloth import FastVisionModel" in source
     assert "Qwen" not in source
     assert "FastLanguageModel" not in source
+    assert "sft-warmstart-grpo" in source
+    assert "-sft-warmstart" in source
+    assert "learning_rate: float = 5e-6" in source
+    assert '"learning_rate": learning_rate' in source
 
 
 def test_modal_sft_defaults_match_300_episode_fast_handoff_plan():

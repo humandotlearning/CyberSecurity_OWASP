@@ -47,6 +47,7 @@ PUBLIC_REPO_URL = "https://github.com/humandotlearning/CyberSecurity_OWASP.git"
 PUBLIC_REPO_BRANCH = "master"
 DEFAULT_GEMMA_MODEL = "unsloth/gemma-4-E2B-it"
 GRPO_TRAINING_TIMEOUT_SECONDS = 24 * 60 * 60
+GRPO_GPU_FALLBACK = ["L40S", "L4"]
 _IMAGE_NOTICE_PRINTED = False
 
 
@@ -67,6 +68,29 @@ def _model_repo_slug(model_name: str) -> str:
         .replace(".", "-")
         .lower()
     )
+
+
+def _grpo_output_repo_slug(
+    model_name: str,
+    *,
+    initial_adapter_path: str = "",
+    initial_adapter_repo_id: str = "",
+) -> str:
+    warmstart_tag = (
+        "-sft-warmstart" if initial_adapter_path or initial_adapter_repo_id else ""
+    )
+    return (
+        f"CyberSecurity_OWASP-{_model_repo_slug(model_name)}"
+        f"{warmstart_tag}-grpo-lora"
+    )
+
+
+def _grpo_run_algo_tag(
+    *,
+    initial_adapter_path: str = "",
+    initial_adapter_repo_id: str = "",
+) -> str:
+    return "sft-warmstart-grpo" if initial_adapter_path or initial_adapter_repo_id else "grpo"
 
 
 def _hf_model_cache_path(model_name: str) -> pathlib.Path:
@@ -540,7 +564,7 @@ def verify_modal_scenario_cache_for_training(
 
 @app.function(
     image=training_image,
-    gpu="L4",
+    gpu=GRPO_GPU_FALLBACK,
     timeout=4 * 60 * 60,
     volumes={RUNS_DIR: volume, CACHE_DIR: cache_volume, SCENARIO_CACHE_DIR: scenario_cache_volume},
     secrets=secrets,
@@ -578,7 +602,7 @@ def check_training_imports() -> dict[str, str]:
 
 @app.function(
     image=training_image,
-    gpu="L4",
+    gpu=GRPO_GPU_FALLBACK,
     timeout=4 * 60 * 60,
     volumes={RUNS_DIR: volume, CACHE_DIR: cache_volume, SCENARIO_CACHE_DIR: scenario_cache_volume},
     secrets=secrets,
@@ -1021,7 +1045,7 @@ def run_cybersecurity_owasp_baseline(
 
 @app.function(
     image=training_image,
-    gpu="L4",
+    gpu=GRPO_GPU_FALLBACK,
     timeout=GRPO_TRAINING_TIMEOUT_SECONDS,
     volumes={RUNS_DIR: volume, CACHE_DIR: cache_volume, SCENARIO_CACHE_DIR: scenario_cache_volume},
     secrets=secrets,
@@ -1044,6 +1068,7 @@ def train_cybersecurity_owasp_grpo(
     num_generations: int = 6,
     per_device_train_batch_size: int = 1,
     gradient_accumulation_steps: int = 0,
+    learning_rate: float = 5e-6,
     use_vllm: bool = False,
     vllm_gpu_memory_utilization: float = 0.2,
     trace_log_every: int = 5,
@@ -1135,7 +1160,7 @@ def train_cybersecurity_owasp_grpo(
     user = whoami(token=hf_token)["name"]
     env_repo_id = env_repo_id or f"{user}/CyberSecurity_OWASP"
     output_repo_id = output_repo_id or (
-        f"{user}/CyberSecurity_OWASP-{_model_repo_slug(model_name)}-grpo-lora"
+        f"{user}/{_grpo_output_repo_slug(model_name, initial_adapter_path=initial_adapter_path, initial_adapter_repo_id=initial_adapter_repo_id)}"
     )
     if not trackio_space_id:
         trackio_space_id = "Humanlearning/CyberSecurity_OWASP-trackio"
@@ -1163,8 +1188,12 @@ def train_cybersecurity_owasp_grpo(
 
     model_slug = model_name.replace("/", "-")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    algo_tag = _grpo_run_algo_tag(
+        initial_adapter_path=initial_adapter_path,
+        initial_adapter_repo_id=initial_adapter_repo_id,
+    )
     run_name = run_name or (
-        f"CyberSecurity_OWASP-{model_slug}-grpo-level{difficulty}-"
+        f"CyberSecurity_OWASP-{model_slug}-{algo_tag}-level{difficulty}-"
         f"{reward_tracking_config['reward_variant']}-steps{max_steps}-seed{seed_start}-"
         f"{stamp}-{git_sha[:8]}"
     )
@@ -1757,6 +1786,7 @@ def train_cybersecurity_owasp_grpo(
     print(f"Reward config hash: {reward_tracking_config['reward_config_hash']}")
     print(f"Reward variant: {reward_tracking_config['reward_variant']}")
     print(f"Reward config path: {reward_tracking_config['reward_config_path']}")
+    print(f"Learning rate: {learning_rate}")
     print(f"Reward env overrides: {reward_env}")
     print(f"Model cache volume: {CACHE_VOLUME_NAME}")
     print(f"Scenario cache volume: {SCENARIO_CACHE_VOLUME_NAME}")
@@ -1950,7 +1980,7 @@ def train_cybersecurity_owasp_grpo(
 
     grpo_config_values = {
         "temperature": 1.0,
-        "learning_rate": 5e-6,
+        "learning_rate": learning_rate,
         "weight_decay": 0.001,
         "warmup_ratio": 0.1,
         "lr_scheduler_type": "linear",
@@ -2025,7 +2055,7 @@ def train_cybersecurity_owasp_grpo(
             print(
                 "Training heartbeat: still inside trainer.train() "
                 f"after {elapsed}s. For this smoke, the slow part is usually "
-                f"Gemma generation/backprop on L4: {num_generations} completions "
+                f"Gemma generation/backprop: {num_generations} completions "
                 f"up to {max_completion_length} tokens, plus Trackio upload."
             )
 
@@ -2075,6 +2105,7 @@ def train_cybersecurity_owasp_grpo(
         "num_generations": num_generations,
         "per_device_train_batch_size": per_device_train_batch_size,
         "gradient_accumulation_steps": resolved_gradient_accumulation_steps,
+        "learning_rate": learning_rate,
         "effective_train_batch_size": effective_train_batch_size,
         "use_vllm": int(bool(use_vllm)),
         "vllm_gpu_memory_utilization": vllm_gpu_memory_utilization,
@@ -2110,6 +2141,7 @@ def main(
     num_generations: int = 6,
     per_device_train_batch_size: int = 1,
     gradient_accumulation_steps: int = 0,
+    learning_rate: float = 5e-6,
     use_vllm: bool = False,
     vllm_gpu_memory_utilization: float = 0.2,
     trace_log_every: int = 5,
@@ -2228,7 +2260,7 @@ def main(
                     )
                 resolved_output_repo_id = (
                     resolved_output_repo_id
-                    or f"{user}/CyberSecurity_OWASP-{_model_repo_slug(model_name)}-grpo-lora"
+                    or f"{user}/{_grpo_output_repo_slug(model_name, initial_adapter_path=initial_adapter_path, initial_adapter_repo_id=initial_adapter_repo_id)}"
                 )
             except Exception as exc:
                 print(f"Could not resolve Hugging Face defaults locally: {exc!r}")
@@ -2253,8 +2285,12 @@ def main(
     model_slug = model_name.replace("/", "-")
     local_stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     variant_tag = reward_variant or "default"
+    algo_tag = _grpo_run_algo_tag(
+        initial_adapter_path=initial_adapter_path,
+        initial_adapter_repo_id=initial_adapter_repo_id,
+    )
     run_name = run_name or (
-        f"CyberSecurity_OWASP-{model_slug}-grpo-level{difficulty}-"
+        f"CyberSecurity_OWASP-{model_slug}-{algo_tag}-level{difficulty}-"
         f"{variant_tag}-steps{max_steps}-seed{seed_start}-{local_stamp}-{git_sha[:8]}"
     )
 
@@ -2273,7 +2309,7 @@ def main(
     else:
         print(
             "Output model repo: derived remotely from HF_TOKEN as "
-            f"<hf-user>/CyberSecurity_OWASP-{_model_repo_slug(model_name)}-grpo-lora"
+            f"<hf-user>/{_grpo_output_repo_slug(model_name, initial_adapter_path=initial_adapter_path, initial_adapter_repo_id=initial_adapter_repo_id)}"
         )
     print(f"Hub push enabled: {push_to_hub}")
     if initial_adapter_path:
@@ -2287,7 +2323,8 @@ def main(
         f"per_device_train_batch_size={per_device_train_batch_size}, "
         f"gradient_accumulation_steps={resolved_gradient_accumulation_steps}, "
         f"num_generations={num_generations}, "
-        f"effective_train_batch_size={effective_train_batch_size}"
+        f"effective_train_batch_size={effective_train_batch_size}, "
+        f"learning_rate={learning_rate}"
     )
     print(
         "Generation acceleration config: "
@@ -2301,7 +2338,7 @@ def main(
         "slow when local source or dependency layers changed."
     )
     print("2. CPU-only scenario cache preflight in CyberSecurity_OWASP-scenario-cache.")
-    print("3. GPU container start on one L4 only after cache preflight passes.")
+    print(f"3. GPU container start after cache preflight passes; fallback={GRPO_GPU_FALLBACK}.")
     print("4. Model cache check in CyberSecurity_OWASP-model-cache.")
     print("5. Cached snapshot load into GPU RAM with Unsloth progress.")
     print("6. GRPO steps, Trackio sync, and volume commit.")
@@ -2328,6 +2365,7 @@ def main(
         num_generations=num_generations,
         per_device_train_batch_size=per_device_train_batch_size,
         gradient_accumulation_steps=resolved_gradient_accumulation_steps,
+        learning_rate=learning_rate,
         use_vllm=use_vllm,
         vllm_gpu_memory_utilization=vllm_gpu_memory_utilization,
         trace_log_every=trace_log_every,

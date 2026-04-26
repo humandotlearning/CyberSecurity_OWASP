@@ -1,0 +1,102 @@
+extends: grpo_small.yaml
+reward:
+  mode: dense_train
+  training_mode: dense_train
+  stage: early
+  progressive_cap:
+    value: 8.0
+    description: "Higher shaping budget for SFT-warmstarted GRPO so early correct workflow actions separate from random exploration."
+  penalty_floor:
+    value: -4.0
+    description: "Less severe dense floor for fast policy learning while terminal verifier penalties still apply."
+  train_cap:
+    value: 26.0
+    description: "Allows strong progressive and terminal rewards in the same episode."
+  shaping_weight:
+    early: 1.4
+    middle: 1.1
+    late: 0.8
+    final: 0.25
+    description: "Emphasizes workflow shaping early, then anneals toward terminal verifier reward."
+  policy_inspected:
+    value: 0.80
+    description: "Stronger reward for starting with the policy graph, matching the SFT oracle trace."
+  route_map_inspected:
+    value: 0.45
+    cap: 0.90
+    description: "Rewards route discovery without making route-list loops attractive."
+  relevant_file_inspected:
+    value: 0.90
+    cap: 1.40
+    description: "Rewards reading or searching authorization-relevant code before patching."
+  local_evidence_found:
+    value: 2.20
+    cap: 2.20
+    description: "Prioritizes local evidence of the authorization failure before diagnosis."
+  diagnosis_correct:
+    value: 2.00
+    description: "Large reward for correct bug class, route, policy rule, and local evidence."
+  patch_applies:
+    value: 1.20
+    description: "Rewards applying a concrete patch after diagnosis."
+  app_boots_after_patch:
+    value: 1.00
+    description: "Rewards keeping the generated app bootable after patching."
+  visible_tests_improved:
+    value: 1.20
+    cap: 1.20
+    description: "Rewards visible test success after the patch."
+  public_routes_visible_pass:
+    value: 0.70
+    description: "Rewards preserving intentionally public routes."
+  step_penalty:
+    early: -0.002
+    middle: -0.004
+    late: -0.008
+    final: 0.0
+    cap: -0.35
+    description: "Keeps mild pressure toward concise episodes without discouraging exploration."
+  speed_bonus:
+    value: 0.5
+    description: "Small terminal success speed bonus; shaping carries early learning."
+  token_penalty:
+    target_tokens: 110
+    early: -0.002
+    middle: -0.0025
+    late: -0.003
+    final: 0.0
+    cap: -0.45
+    description: "Penalizes clipped or verbose tool calls immediately in SFT-warmstarted GRPO."
+  invalid_action:
+    value: -0.60
+    description: "Clear penalty for invalid tool calls, schema errors, or phase violations."
+  repeated_invalid_action:
+    value: -0.80
+    description: "Stronger penalty for repeating invalid behavior."
+  repeated_low_value_action:
+    value: -0.45
+    description: "Discourages repeated valid actions that add no new progress."
+  no_progress_action:
+    value: -0.20
+    description: "Penalizes valid but unhelpful actions after useful progress has already been collected."
+  noop_action:
+    value: -0.10
+    description: "Discourages no-op completions."
+  repeated_file_read:
+    value: -0.25
+    description: "Discourages rereading the same file without a patch change."
+  repeated_local_request:
+    value: -0.25
+    description: "Discourages repeated identical requests after evidence is known."
+  repeated_visible_tests:
+    value: -0.15
+    description: "Discourages rerunning visible tests without a new patch."
+  patch_before_policy:
+    value: -0.60
+    description: "Strongly discourages patching before policy inspection."
+  submit_without_patch:
+    value: -1.00
+    description: "Strongly discourages terminal submission without a patch."
+  submit_without_visible_tests:
+    value: -0.60
+    description: "Discourages submitting a patch before visible tests."
