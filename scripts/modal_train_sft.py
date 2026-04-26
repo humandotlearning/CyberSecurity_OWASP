@@ -33,6 +33,15 @@ TRITON_CACHE_DIR = CACHE_DIR / "triton"
 REMOTE_PROJECT = "/root/CyberSecurity_OWASP"
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_GEMMA_MODEL = "unsloth/gemma-4-E2B-it"
+SFT_GPU_FALLBACK = ["H200", "H100", "A100-80GB", "L40S"]
+DEFAULT_CURRICULUM_LEVELS = "0,1,2,3"
+DEFAULT_TOTAL_TRAIN_EPISODES = 300
+DEFAULT_EPISODES_PER_LEVEL = 75
+DEFAULT_TRACKIO_SPACE_ID = "Humanlearning/CyberSecurity_OWASP-trackio"
+DEFAULT_TRACKIO_PROJECT = "CyberSecurity_OWASP-sft"
+DEFAULT_SFT_OUTPUT_REPO_ID = (
+    "Humanlearning/CyberSecurity_OWASP-unsloth-gemma-4-e2b-it-sft-lora"
+)
 PUBLIC_REPO_URL = "https://github.com/humandotlearning/CyberSecurity_OWASP.git"
 PUBLIC_REPO_BRANCH = "master"
 
@@ -48,6 +57,170 @@ def _ensure_gemma4_model(model_name: str) -> str:
 
 def _model_repo_slug(model_name: str) -> str:
     return model_name.replace("/", "-").replace("_", "-").replace(".", "-").lower()
+
+
+def _parse_int_csv(value: str) -> set[int]:
+    if not value.strip():
+        return set()
+    return {int(item.strip()) for item in value.split(",") if item.strip()}
+
+
+SFT_ALLOWED_TOOLS = {
+    "inspect_policy_graph",
+    "list_routes",
+    "read_openapi",
+    "read_file",
+    "search_code",
+    "send_local_request",
+    "compare_identities",
+    "submit_diagnosis",
+    "patch_file",
+    "run_visible_tests",
+    "submit_fix",
+    "noop",
+}
+
+
+def _read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{path}:{line_number}: invalid JSONL: {exc}") from exc
+        if not isinstance(row, dict):
+            raise ValueError(f"{path}:{line_number}: row must be a JSON object")
+        rows.append(row)
+    return rows
+
+
+def _verify_sft_rows(
+    path: pathlib.Path,
+    *,
+    min_terminal_reward: float,
+) -> tuple[list[str], list[float], int, set[int]]:
+    rows = _read_jsonl(path)
+    failures: list[str] = []
+    rewards: list[float] = []
+    difficulties: set[int] = set()
+    for index, row in enumerate(rows, start=1):
+        messages = row.get("messages")
+        if not isinstance(messages, list) or len(messages) < 3:
+            failures.append(f"{path}:{index}: messages must include system/user/assistant")
+            continue
+        assistant = messages[-1]
+        if assistant.get("role") != "assistant":
+            failures.append(f"{path}:{index}: final message must be assistant")
+            continue
+        try:
+            action = json.loads(str(assistant.get("content", "")))
+        except json.JSONDecodeError as exc:
+            failures.append(f"{path}:{index}: assistant content is not JSON: {exc}")
+            continue
+        if not isinstance(action, dict) or action.get("tool_name") not in SFT_ALLOWED_TOOLS:
+            failures.append(f"{path}:{index}: assistant content is not a valid tool action")
+            continue
+        metadata = row.get("metadata")
+        if not isinstance(metadata, dict):
+            failures.append(f"{path}:{index}: missing metadata")
+            continue
+        if metadata.get("final_success") is not True:
+            failures.append(f"{path}:{index}: final_success is not true")
+            continue
+        if metadata.get("anti_cheat_flags") or []:
+            failures.append(f"{path}:{index}: anti-cheat flags present")
+            continue
+        if "difficulty" in metadata:
+            difficulties.add(int(metadata.get("difficulty", 0)))
+        terminal_reward = float(metadata.get("terminal_total", 0.0) or 0.0)
+        rewards.append(terminal_reward)
+        if terminal_reward < min_terminal_reward:
+            failures.append(
+                f"{path}:{index}: terminal_total {terminal_reward:.3f} below {min_terminal_reward:.3f}"
+            )
+            continue
+        breakdown = metadata.get("final_reward_breakdown") or {}
+        if not isinstance(breakdown, dict):
+            failures.append(f"{path}:{index}: missing final_reward_breakdown")
+            continue
+        for key in ("security", "regression", "public_routes", "patch_quality", "visible_tests"):
+            if float(breakdown.get(key, 0.0) or 0.0) <= 0.0:
+                failures.append(f"{path}:{index}: reward component {key} is not positive")
+                break
+    return failures, rewards, len(rows), difficulties
+
+
+def verify_sft_inputs(
+    *,
+    train_jsonl: str,
+    validation_jsonl: str = "",
+    manifest_path: str = "",
+    required_difficulties: str = "",
+    min_terminal_reward: float = 12.0,
+    min_train_rows: int = 1,
+) -> dict[str, Any]:
+    train_path = pathlib.Path(train_jsonl)
+    validation_path = pathlib.Path(validation_jsonl) if validation_jsonl else pathlib.Path("")
+    failures, rewards, train_rows, difficulties = _verify_sft_rows(
+        train_path,
+        min_terminal_reward=min_terminal_reward,
+    )
+    validation_rows = 0
+    if validation_jsonl and validation_path.exists() and validation_path.stat().st_size > 0:
+        validation_failures, validation_rewards, validation_rows, validation_difficulties = _verify_sft_rows(
+            validation_path,
+            min_terminal_reward=min_terminal_reward,
+        )
+        failures.extend(validation_failures)
+        rewards.extend(validation_rewards)
+        difficulties.update(validation_difficulties)
+    if train_rows < min_train_rows:
+        failures.append(f"{train_path}: expected at least {min_train_rows} train rows, found {train_rows}")
+
+    manifest_verification: dict[str, Any] = {}
+    manifest = pathlib.Path(manifest_path) if manifest_path else pathlib.Path("")
+    if manifest_path and manifest.exists():
+        try:
+            manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+            manifest_verification = dict(manifest_data.get("reward_verification") or {})
+            manifest_difficulties = {
+                int(item) for item in manifest_data.get("difficulty_levels", []) or []
+            }
+        except Exception as exc:
+            failures.append(f"{manifest}: could not read manifest reward verification: {exc}")
+            manifest_difficulties = set()
+        if manifest_verification and manifest_verification.get("passed") is not True:
+            failures.append(f"{manifest}: manifest reward_verification did not pass")
+    else:
+        manifest_difficulties = set()
+
+    required = _parse_int_csv(required_difficulties) or manifest_difficulties
+    missing_difficulties = sorted(level for level in required if level not in difficulties)
+    if missing_difficulties:
+        failures.append(f"missing required curriculum difficulty rows: {missing_difficulties}")
+
+    reward_summary = {
+        "min": min(rewards) if rewards else 0.0,
+        "max": max(rewards) if rewards else 0.0,
+        "mean": (sum(rewards) / len(rewards)) if rewards else 0.0,
+    }
+    return {
+        "passed": not failures,
+        "failure_count": len(failures),
+        "failures": failures[:50],
+        "train_rows": train_rows,
+        "validation_rows": validation_rows,
+        "difficulties": sorted(difficulties),
+        "required_difficulties": sorted(required),
+        "missing_difficulties": missing_difficulties,
+        "min_terminal_reward": float(min_terminal_reward),
+        "reward_summary": reward_summary,
+        "manifest_reward_verification": manifest_verification,
+    }
 
 
 def _configure_modal_cache_env() -> dict[str, str]:
@@ -171,7 +344,7 @@ def upload_sft_jsonl(relative_path: str, content: str) -> str:
 
 @app.function(
     image=training_image,
-    gpu="L4",
+    gpu=SFT_GPU_FALLBACK,
     timeout=12 * 60 * 60,
     volumes={RUNS_DIR: volume, CACHE_DIR: cache_volume},
     secrets=secrets,
@@ -179,24 +352,29 @@ def upload_sft_jsonl(relative_path: str, content: str) -> str:
 def train_cybersecurity_owasp_sft(
     train_jsonl: str = "/runs/sft/train.jsonl",
     validation_jsonl: str = "/runs/sft/validation.jsonl",
-    output_repo_id: str = "",
+    manifest_path: str = "/runs/sft/manifest.json",
+    output_repo_id: str = DEFAULT_SFT_OUTPUT_REPO_ID,
     model_name: str = DEFAULT_GEMMA_MODEL,
     run_name: str = "",
     max_seq_length: int = 4096,
-    max_steps: int = 100,
+    max_steps: int = -1,
     num_train_epochs: float = 1.0,
-    per_device_train_batch_size: int = 1,
-    gradient_accumulation_steps: int = 16,
+    per_device_train_batch_size: int = 4,
+    gradient_accumulation_steps: int = 4,
     learning_rate: float = 2e-5,
     lora_rank: int = 32,
-    trackio_space_id: str = "Humanlearning/CyberSecurity_OWASP-trackio",
-    trackio_project: str = "CyberSecurity_OWASP-sft",
+    trackio_space_id: str = DEFAULT_TRACKIO_SPACE_ID,
+    trackio_project: str = DEFAULT_TRACKIO_PROJECT,
+    require_reward_verification: bool = True,
+    required_difficulties: str = DEFAULT_CURRICULUM_LEVELS,
+    min_terminal_reward: float = 12.0,
+    min_train_rows: int = 1,
     push_to_hub: bool = False,
 ) -> dict[str, Any]:
     import inspect
 
     from datasets import load_dataset
-    from huggingface_hub import snapshot_download, whoami
+    from huggingface_hub import snapshot_download
     from trl import SFTConfig, SFTTrainer
     from trl.chat_template_utils import add_response_schema
     from unsloth import FastVisionModel
@@ -207,10 +385,9 @@ def train_cybersecurity_owasp_sft(
     if not hf_token:
         raise RuntimeError(f"HF_TOKEN is missing from the Modal secret {SECRET_NAME}.")
 
-    user = whoami(token=hf_token)["name"]
-    output_repo_id = output_repo_id or (
-        f"{user}/CyberSecurity_OWASP-{_model_repo_slug(model_name)}-sft-lora"
-    )
+    output_repo_id = output_repo_id or DEFAULT_SFT_OUTPUT_REPO_ID
+    os.environ["TRACKIO_SPACE_ID"] = trackio_space_id
+    os.environ["TRACKIO_PROJECT"] = trackio_project
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = run_name or f"CyberSecurity_OWASP-{_model_repo_slug(model_name)}-sft-{stamp}"
     output_dir = RUNS_DIR / run_name
@@ -222,6 +399,21 @@ def train_cybersecurity_owasp_sft(
     has_validation = validation_path.exists() and validation_path.stat().st_size > 0
     if has_validation:
         data_files["validation"] = validation_jsonl
+
+    reward_preflight = verify_sft_inputs(
+        train_jsonl=train_jsonl,
+        validation_jsonl=validation_jsonl if has_validation else "",
+        manifest_path=manifest_path,
+        required_difficulties=required_difficulties,
+        min_terminal_reward=min_terminal_reward,
+        min_train_rows=min_train_rows,
+    )
+    print(f"SFT reward preflight: {json.dumps(reward_preflight, sort_keys=True)}")
+    if require_reward_verification and not reward_preflight["passed"]:
+        raise RuntimeError(
+            "SFT reward verification failed; refusing to start model training. "
+            f"Failures: {reward_preflight['failures']}"
+        )
     dataset = load_dataset("json", data_files=data_files)
 
     print(f"SFT run name: {run_name}")
@@ -232,6 +424,11 @@ def train_cybersecurity_owasp_sft(
     print(f"Output repo: https://huggingface.co/{output_repo_id}")
     print(f"Trackio Space: https://huggingface.co/spaces/{trackio_space_id}")
     print(f"HF_HUB_CACHE: {cache_env['HF_HUB_CACHE']}")
+    print(
+        "SFT target: "
+        f"{DEFAULT_TOTAL_TRAIN_EPISODES} total train episodes, "
+        f"{DEFAULT_EPISODES_PER_LEVEL} per level across {DEFAULT_CURRICULUM_LEVELS}"
+    )
 
     try:
         snapshot_download(repo_id=model_name, cache_dir=str(HF_HUB_CACHE_DIR), token=hf_token)
@@ -280,19 +477,25 @@ def train_cybersecurity_owasp_sft(
         "per_device_train_batch_size": per_device_train_batch_size,
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "learning_rate": learning_rate,
+        "optim": "adamw_8bit",
         "logging_steps": 1,
-        "save_steps": max(10, max_steps),
+        "logging_first_step": True,
+        "save_steps": max(10, max_steps) if max_steps > 0 else 100,
         "report_to": "trackio",
         "project": trackio_project,
         "trackio_space_id": trackio_space_id,
         "run_name": run_name,
         "assistant_only_loss": True,
-        "packing": False,
+        "packing": True,
+        "packing_strategy": "bfd",
+        "bf16": True,
+        "tf32": True,
         "gradient_checkpointing": True,
         "gradient_checkpointing_kwargs": {"use_reentrant": False},
         "push_to_hub": push_to_hub,
         "hub_model_id": output_repo_id,
         "hub_private_repo": True,
+        "hub_strategy": "every_save",
     }
     sft_parameters = set(inspect.signature(SFTConfig).parameters)
     skipped = sorted(set(sft_values) - sft_parameters)
@@ -335,6 +538,11 @@ def train_cybersecurity_owasp_sft(
         "output_repo_id": output_repo_id,
         "train_jsonl": train_jsonl,
         "validation_jsonl": validation_jsonl if has_validation else "",
+        "manifest_path": manifest_path,
+        "reward_preflight": reward_preflight,
+        "required_difficulties": required_difficulties,
+        "default_total_train_episodes": DEFAULT_TOTAL_TRAIN_EPISODES,
+        "default_episodes_per_level": DEFAULT_EPISODES_PER_LEVEL,
         "max_steps": max_steps,
         "push_to_hub": push_to_hub,
         "trackio_space_id": trackio_space_id,
@@ -365,20 +573,26 @@ def main(
     mode: str = "train",
     local_train_path: str = "outputs/sft/train.jsonl",
     local_validation_path: str = "outputs/sft/validation.jsonl",
+    local_manifest_path: str = "outputs/sft/manifest.json",
     train_jsonl: str = "/runs/sft/train.jsonl",
     validation_jsonl: str = "/runs/sft/validation.jsonl",
-    output_repo_id: str = "",
+    manifest_path: str = "/runs/sft/manifest.json",
+    output_repo_id: str = DEFAULT_SFT_OUTPUT_REPO_ID,
     model_name: str = DEFAULT_GEMMA_MODEL,
     run_name: str = "",
     max_seq_length: int = 4096,
-    max_steps: int = 100,
+    max_steps: int = -1,
     num_train_epochs: float = 1.0,
-    per_device_train_batch_size: int = 1,
-    gradient_accumulation_steps: int = 16,
+    per_device_train_batch_size: int = 4,
+    gradient_accumulation_steps: int = 4,
     learning_rate: float = 2e-5,
     lora_rank: int = 32,
-    trackio_space_id: str = "Humanlearning/CyberSecurity_OWASP-trackio",
-    trackio_project: str = "CyberSecurity_OWASP-sft",
+    trackio_space_id: str = DEFAULT_TRACKIO_SPACE_ID,
+    trackio_project: str = DEFAULT_TRACKIO_PROJECT,
+    require_reward_verification: bool = True,
+    required_difficulties: str = DEFAULT_CURRICULUM_LEVELS,
+    min_terminal_reward: float = 12.0,
+    min_train_rows: int = 1,
     source_mode: str = "local",
     repo_url: str = PUBLIC_REPO_URL,
     repo_branch: str = PUBLIC_REPO_BRANCH,
@@ -392,6 +606,22 @@ def main(
 
     local_train = pathlib.Path(local_train_path)
     local_validation = pathlib.Path(local_validation_path)
+    local_manifest = pathlib.Path(local_manifest_path)
+    if require_reward_verification and local_train.exists():
+        local_reward_preflight = verify_sft_inputs(
+            train_jsonl=str(local_train),
+            validation_jsonl=str(local_validation) if local_validation.exists() else "",
+            manifest_path=str(local_manifest) if local_manifest.exists() else "",
+            required_difficulties=required_difficulties,
+            min_terminal_reward=min_terminal_reward,
+            min_train_rows=min_train_rows,
+        )
+        print(f"Local SFT reward preflight: {json.dumps(local_reward_preflight, sort_keys=True)}")
+        if not local_reward_preflight["passed"]:
+            raise RuntimeError(
+                "Local SFT reward verification failed; refusing to upload/train. "
+                f"Failures: {local_reward_preflight['failures']}"
+            )
     if local_train.exists():
         uploaded = upload_sft_jsonl.remote(
             "sft/train.jsonl",
@@ -406,6 +636,13 @@ def main(
         )
         print(f"Uploaded validation JSONL: {uploaded_validation}")
         validation_jsonl = uploaded_validation
+    if local_manifest.exists():
+        uploaded_manifest = upload_sft_jsonl.remote(
+            "sft/manifest.json",
+            local_manifest.read_text(encoding="utf-8"),
+        )
+        print(f"Uploaded manifest: {uploaded_manifest}")
+        manifest_path = uploaded_manifest
     if mode == "upload":
         return
 
@@ -416,6 +653,7 @@ def main(
     kwargs = dict(
         train_jsonl=train_jsonl,
         validation_jsonl=validation_jsonl,
+        manifest_path=manifest_path,
         output_repo_id=output_repo_id,
         model_name=model_name,
         run_name=run_name,
@@ -428,11 +666,19 @@ def main(
         lora_rank=lora_rank,
         trackio_space_id=trackio_space_id,
         trackio_project=trackio_project,
+        require_reward_verification=require_reward_verification,
+        required_difficulties=required_difficulties,
+        min_terminal_reward=min_terminal_reward,
+        min_train_rows=min_train_rows,
         push_to_hub=push_to_hub,
     )
     print(f"SFT run name: {run_name}")
     print(f"Train JSONL: {train_jsonl}")
     print(f"Validation JSONL: {validation_jsonl}")
+    print(f"Manifest: {manifest_path}")
+    print(f"Reward verification required: {require_reward_verification}")
+    if required_difficulties:
+        print(f"Required curriculum difficulties: {required_difficulties}")
     print(f"Hub push enabled: {push_to_hub}")
     if detach:
         call = train_cybersecurity_owasp_sft.spawn(**kwargs)

@@ -37,3 +37,40 @@ def test_modal_training_is_pinned_to_gemma4_e2b():
     assert "from unsloth import FastVisionModel" in source
     assert "Qwen" not in source
     assert "FastLanguageModel" not in source
+
+
+def test_modal_sft_defaults_match_300_episode_fast_handoff_plan():
+    source = (ROOT / "scripts" / "modal_train_sft.py").read_text(encoding="utf-8")
+
+    assert 'SFT_GPU_FALLBACK = ["H200", "H100", "A100-80GB", "L40S"]' in source
+    assert "gpu=SFT_GPU_FALLBACK" in source
+    assert "DEFAULT_TOTAL_TRAIN_EPISODES = 300" in source
+    assert "DEFAULT_EPISODES_PER_LEVEL = 75" in source
+    assert 'DEFAULT_CURRICULUM_LEVELS = "0,1,2,3"' in source
+    assert (
+        'DEFAULT_SFT_OUTPUT_REPO_ID = (\n'
+        '    "Humanlearning/CyberSecurity_OWASP-unsloth-gemma-4-e2b-it-sft-lora"'
+    ) in source
+    assert "output_repo_id = output_repo_id or DEFAULT_SFT_OUTPUT_REPO_ID" in source
+    assert source.count("max_steps: int = -1") >= 2
+    assert source.count("per_device_train_batch_size: int = 4") >= 2
+    assert source.count("gradient_accumulation_steps: int = 4") >= 2
+    assert '"assistant_only_loss": True' in source
+    assert '"packing": True' in source
+    assert '"packing_strategy": "bfd"' in source
+    assert '"bf16": True' in source
+    assert '"tf32": True' in source
+    assert '"hub_strategy": "every_save"' in source
+    assert 'trackio_space_id: str = DEFAULT_TRACKIO_SPACE_ID' in source
+    assert 'trackio_project: str = DEFAULT_TRACKIO_PROJECT' in source
+    assert 'os.environ["TRACKIO_SPACE_ID"] = trackio_space_id' in source
+    assert 'os.environ["TRACKIO_PROJECT"] = trackio_project' in source
+
+
+def test_modal_grpo_loads_sft_adapter_from_hub_as_trainable_lora():
+    source = (ROOT / "scripts" / "modal_train_grpo.py").read_text(encoding="utf-8")
+
+    assert "initial_adapter_repo_id" in source
+    assert "Downloading initial SFT adapter" in source
+    assert "snapshot_download(" in source
+    assert "PeftModel.from_pretrained(model, adapter_source, is_trainable=True)" in source

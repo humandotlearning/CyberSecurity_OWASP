@@ -90,11 +90,20 @@ def test_dry_run_oracle_creates_chat_jsonl_without_network():
             validation_episodes=1,
             out_dir=out_dir,
             dry_run_oracle=True,
+            workers=2,
+            difficulty_levels=(0, 1),
         )
     )
 
-    assert manifest["episodes_attempted"] == 3
-    assert manifest["episodes_accepted"] == 3
+    assert manifest["difficulty_levels"] == [0, 1]
+    assert manifest["difficulty_bucket_count"] >= 2
+    assert manifest["episodes_attempted"] == 6
+    assert manifest["episodes_accepted"] == 6
+    assert manifest["workers"] == 2
+    assert manifest["reward_verification"]["passed"] is True
+    assert manifest["reward_verification"]["missing_difficulties"] == []
+    assert manifest["rows_by_difficulty"]["0"] > 0
+    assert manifest["rows_by_difficulty"]["1"] > 0
     assert (out_dir / "train.jsonl").exists()
     assert (out_dir / "validation.jsonl").exists()
     train_rows = [
@@ -110,6 +119,43 @@ def test_dry_run_oracle_creates_chat_jsonl_without_network():
     assert train_rows
     assert validation_rows
     assert all(row["messages"][-1]["role"] == "assistant" for row in train_rows)
+    reward_check = generate_sft_dataset.verify_sft_dataset_rewards(
+        out_dir,
+        required_difficulties=(0, 1),
+    )
+    assert reward_check["passed"] is True
+    assert (out_dir / "README.md").exists()
+
+
+def test_reward_verification_rejects_low_reward_rows():
+    out_dir = _isolated_out_dir("bad_reward")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    action = CyberSecurityOWASPAction(tool_name="inspect_policy_graph", arguments={})
+    row = {
+        "messages": [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "user"},
+            {"role": "assistant", "content": json.dumps(action.model_dump())},
+        ],
+        "metadata": {
+            "final_success": True,
+            "terminal_total": 1.0,
+            "anti_cheat_flags": [],
+            "final_reward_breakdown": {
+                "security": 5.0,
+                "regression": 3.0,
+                "public_routes": 1.0,
+                "patch_quality": 2.0,
+                "visible_tests": 1.0,
+            },
+        },
+    }
+    (out_dir / "train.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    reward_check = generate_sft_dataset.verify_sft_dataset_rewards(out_dir)
+
+    assert reward_check["passed"] is False
+    assert reward_check["failure_count"] == 1
 
 
 def test_saved_oracle_trajectory_replays_to_success():

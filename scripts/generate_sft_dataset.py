@@ -14,6 +14,8 @@ import json
 import os
 import statistics
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -72,6 +74,14 @@ class DatasetConfig:
     temperature: float = 0.2
     top_p: float = 0.95
     dry_run_oracle: bool = False
+    workers: int = 0
+    min_terminal_reward: float = 12.0
+    difficulty_levels: tuple[int, ...] = ()
+    difficulty_buckets: int = 0
+    push_to_hub: bool = False
+    dataset_repo_id: str = "Humanlearning/CyberSecurity_OWASP-sft-dataset"
+    hub_private: bool = False
+    progress: bool = False
 
 
 class HuggingFaceTeacher:
@@ -579,6 +589,174 @@ def write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
             handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
 
 
+def write_dataset_card(out_dir: Path, manifest: dict[str, Any], dataset_repo_id: str) -> Path:
+    card_path = out_dir / "README.md"
+    difficulty_levels = manifest.get("difficulty_levels", [])
+    reward_verification = manifest.get("reward_verification", {})
+    card = f"""---
+license: apache-2.0
+task_categories:
+- text-generation
+language:
+- en
+tags:
+- cybersecurity
+- owasp
+- openenv
+- tool-use
+- sft
+pretty_name: CyberSecurity_OWASP SFT Dataset
+---
+
+# CyberSecurity_OWASP SFT Dataset
+
+This dataset contains verifier-gated supervised fine-tuning examples for the
+`CyberSecurity_OWASP` OpenEnv environment. Each row teaches one step of the
+defensive local AppSec workflow: inspect policy/code, reproduce a local
+authorization failure, submit a policy-tied diagnosis, patch the generated app,
+run visible tests, and submit the fix.
+
+Every kept trajectory is executed against the real local environment and must
+pass the deterministic reward verifier before rows are written.
+
+## Intended Use
+
+- Target SFT model: `{manifest.get("target_model", "")}`
+- Teacher model: `{manifest.get("teacher_model", "")}`
+- Dataset repo: `{dataset_repo_id}`
+- Format: chat JSONL with `messages` and verifier metadata
+- Dry-run oracle: `{manifest.get("dry_run_oracle", False)}`
+
+## Curriculum Coverage
+
+- Difficulty levels: `{difficulty_levels}`
+- Episodes attempted: `{manifest.get("episodes_attempted", 0)}`
+- Episodes accepted: `{manifest.get("episodes_accepted", 0)}`
+- Acceptance rate: `{manifest.get("acceptance_rate", 0.0):.4f}`
+- Rows by split: `{json.dumps(manifest.get("rows_by_split", {}), sort_keys=True)}`
+- Rows by difficulty: `{json.dumps(manifest.get("rows_by_difficulty", {}), sort_keys=True)}`
+
+## Reward Verification
+
+- Passed: `{reward_verification.get("passed", False)}`
+- Checked rows: `{reward_verification.get("checked_rows", 0)}`
+- Minimum terminal reward: `{reward_verification.get("min_terminal_reward", 0.0)}`
+- Reward summary: `{json.dumps(reward_verification.get("reward_summary", {}), sort_keys=True)}`
+
+Rows are rejected if the episode fails hidden security/regression/public-route
+checks, triggers anti-cheat flags, lacks a positive patch-quality reward, or
+falls below the configured terminal reward threshold.
+
+## Schema
+
+Each JSONL row has:
+
+```json
+{{
+  "messages": [
+    {{"role": "system", "content": "..."}},
+    {{"role": "user", "content": "..."}},
+    {{"role": "assistant", "content": "{{\\"tool_name\\":\\"...\\",\\"arguments\\":{{...}}}}"}}
+  ],
+  "metadata": {{
+    "target_model": "...",
+    "teacher_model": "...",
+    "seed": 0,
+    "split": "train",
+    "difficulty": 0,
+    "step": 1,
+    "tool_name": "inspect_policy_graph",
+    "final_success": true,
+    "terminal_total": 12.5,
+    "anti_cheat_flags": []
+  }}
+}}
+```
+"""
+    card_path.write_text(card, encoding="utf-8")
+    return card_path
+
+
+def push_dataset_to_hub(out_dir: Path, *, repo_id: str, private: bool) -> dict[str, Any]:
+    token = os.getenv("HF_TOKEN")
+    if not token:
+        raise RuntimeError("HF_TOKEN is required for --push-to-hub")
+    try:
+        from huggingface_hub import HfApi
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("huggingface_hub is required for --push-to-hub") from exc
+
+    api = HfApi(token=token)
+    api.create_repo(repo_id=repo_id, repo_type="dataset", private=private, exist_ok=True)
+    commit_info = api.upload_folder(
+        repo_id=repo_id,
+        repo_type="dataset",
+        folder_path=str(out_dir),
+        path_in_repo=".",
+        commit_message="Upload verified CyberSecurity_OWASP SFT dataset",
+        delete_patterns=[
+            "README.md",
+            "manifest.json",
+            "train.jsonl",
+            "validation.jsonl",
+            "hidden_eval.jsonl",
+            "trajectories/**",
+        ],
+    )
+    return {
+        "repo_id": repo_id,
+        "private": bool(private),
+        "url": f"https://huggingface.co/datasets/{repo_id}",
+        "commit_url": getattr(commit_info, "commit_url", ""),
+    }
+
+
+def push_existing_dataset(
+    out_dir: Path,
+    *,
+    repo_id: str,
+    private: bool,
+    min_terminal_reward: float,
+    required_difficulties: tuple[int, ...],
+) -> dict[str, Any]:
+    verification = verify_sft_dataset_rewards(
+        out_dir,
+        min_terminal_reward=min_terminal_reward,
+        require_train_rows=True,
+        required_difficulties=required_difficulties,
+    )
+    if not verification["passed"]:
+        raise RuntimeError(f"Reward verification failed; refusing Hub push: {verification}")
+    manifest_path = out_dir / "manifest.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    else:
+        manifest = {
+            "teacher_model": DEFAULT_TEACHER_MODEL,
+            "target_model": DEFAULT_TARGET_MODEL,
+            "difficulty_levels": [int(level) for level in required_difficulties],
+            "rows_by_split": verification.get("rows_by_split", {}),
+        }
+    manifest["reward_verification"] = verification
+    manifest["hub"] = {
+        "repo_id": repo_id,
+        "private": bool(private),
+        "url": f"https://huggingface.co/datasets/{repo_id}",
+    }
+    write_dataset_card(out_dir, manifest, repo_id)
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True, default=str),
+        encoding="utf-8",
+    )
+    hub_result = push_dataset_to_hub(out_dir, repo_id=repo_id, private=private)
+    manifest["hub"].update(hub_result)
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True, default=str),
+        encoding="utf-8",
+    )
+    return {"reward_verification": verification, "hub": manifest["hub"]}
+
+
 def _write_trajectory(out_dir: Path, trajectory: dict[str, Any]) -> Path:
     traj_dir = out_dir / "trajectories"
     traj_dir.mkdir(parents=True, exist_ok=True)
@@ -622,80 +800,365 @@ def _reward_summary(values: list[float]) -> dict[str, float]:
     }
 
 
+def _parse_int_csv(value: str) -> tuple[int, ...]:
+    if not value.strip():
+        return ()
+    levels = []
+    for item in value.split(","):
+        stripped = item.strip()
+        if not stripped:
+            continue
+        levels.append(int(stripped))
+    return tuple(dict.fromkeys(levels))
+
+
+def _difficulty_levels(config: DatasetConfig) -> tuple[int, ...]:
+    if config.difficulty_levels:
+        return tuple(int(level) for level in config.difficulty_levels)
+    return (int(config.difficulty),)
+
+
+def _configure_difficulty_buckets(config: DatasetConfig, levels: tuple[int, ...]) -> int:
+    requested = max(levels) + 1 if levels else int(config.difficulty) + 1
+    configured = max(int(config.difficulty_buckets or 0), requested, 1)
+    existing = os.getenv("CYBERSECURITY_OWASP_DIFFICULTY_BUCKETS")
+    if existing:
+        configured = max(configured, int(existing))
+    os.environ["CYBERSECURITY_OWASP_DIFFICULTY_BUCKETS"] = str(configured)
+    return configured
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{path}:{line_number}: invalid JSONL row: {exc}") from exc
+        if not isinstance(item, dict):
+            raise ValueError(f"{path}:{line_number}: row must be a JSON object")
+        rows.append(item)
+    return rows
+
+
+def _verify_sft_row_reward(
+    row: dict[str, Any],
+    *,
+    min_terminal_reward: float,
+    path: Path,
+    line_number: int,
+) -> tuple[bool, str, float]:
+    messages = row.get("messages")
+    if not isinstance(messages, list) or len(messages) < 3:
+        return False, f"{path}:{line_number}: messages must include system/user/assistant", 0.0
+    if messages[-1].get("role") != "assistant":
+        return False, f"{path}:{line_number}: final message must be assistant", 0.0
+    try:
+        CyberSecurityOWASPAction(**json.loads(str(messages[-1].get("content", ""))))
+    except Exception as exc:
+        return False, f"{path}:{line_number}: assistant content is not a valid action: {exc}", 0.0
+    metadata = row.get("metadata")
+    if not isinstance(metadata, dict):
+        return False, f"{path}:{line_number}: missing metadata object", 0.0
+    if metadata.get("final_success") is not True:
+        return False, f"{path}:{line_number}: final_success is not true", 0.0
+    flags = metadata.get("anti_cheat_flags") or []
+    if flags:
+        return False, f"{path}:{line_number}: anti-cheat flags present: {flags}", 0.0
+    reward = float(metadata.get("terminal_total", 0.0) or 0.0)
+    if reward < min_terminal_reward:
+        return (
+            False,
+            f"{path}:{line_number}: terminal_total {reward:.3f} below required {min_terminal_reward:.3f}",
+            reward,
+        )
+    breakdown = metadata.get("final_reward_breakdown") or {}
+    if not isinstance(breakdown, dict):
+        return False, f"{path}:{line_number}: missing final_reward_breakdown", reward
+    required_positive = ("security", "regression", "public_routes", "patch_quality", "visible_tests")
+    missing = [key for key in required_positive if float(breakdown.get(key, 0.0) or 0.0) <= 0.0]
+    if missing:
+        return False, f"{path}:{line_number}: non-positive reward components: {', '.join(missing)}", reward
+    return True, "", reward
+
+
+def verify_sft_dataset_rewards(
+    out_dir: Path,
+    *,
+    min_terminal_reward: float = 12.0,
+    require_train_rows: bool = True,
+    required_difficulties: tuple[int, ...] = (),
+) -> dict[str, Any]:
+    """Verify generated SFT rows carry successful verifier-backed rewards."""
+
+    checked_rows = 0
+    failed_rows: list[str] = []
+    rewards: list[float] = []
+    rows_by_split: dict[str, int] = {}
+    rows_by_difficulty: dict[str, int] = {}
+    for split_name in ("train", "validation", "hidden_eval"):
+        path = out_dir / f"{split_name}.jsonl"
+        rows = _read_jsonl(path)
+        if not rows and split_name != "train":
+            continue
+        rows_by_split[split_name] = len(rows)
+        for index, row in enumerate(rows, start=1):
+            ok, error, reward = _verify_sft_row_reward(
+                row,
+                min_terminal_reward=min_terminal_reward,
+                path=path,
+                line_number=index,
+            )
+            checked_rows += 1
+            if reward:
+                rewards.append(reward)
+            if not ok:
+                failed_rows.append(error)
+            metadata = row.get("metadata") if isinstance(row, dict) else {}
+            if isinstance(metadata, dict) and "difficulty" in metadata:
+                difficulty_key = str(int(metadata.get("difficulty", 0)))
+                rows_by_difficulty[difficulty_key] = rows_by_difficulty.get(difficulty_key, 0) + 1
+    passed = not failed_rows and (checked_rows > 0 or not require_train_rows)
+    if require_train_rows and rows_by_split.get("train", 0) <= 0:
+        passed = False
+        failed_rows.append(f"{out_dir / 'train.jsonl'}: no train rows found")
+    missing_difficulties = [
+        int(level)
+        for level in required_difficulties
+        if rows_by_difficulty.get(str(int(level)), 0) <= 0
+    ]
+    if missing_difficulties:
+        passed = False
+        failed_rows.append(f"missing required curriculum difficulty rows: {missing_difficulties}")
+    return {
+        "passed": passed,
+        "checked_rows": checked_rows,
+        "failed_rows": failed_rows[:50],
+        "failure_count": len(failed_rows),
+        "rows_by_split": rows_by_split,
+        "rows_by_difficulty": rows_by_difficulty,
+        "required_difficulties": [int(level) for level in required_difficulties],
+        "missing_difficulties": missing_difficulties,
+        "min_terminal_reward": float(min_terminal_reward),
+        "reward_summary": _reward_summary(rewards),
+    }
+
+
+def _resolved_worker_count(config: DatasetConfig, job_count: int) -> int:
+    if job_count <= 1:
+        return 1
+    if int(config.workers) > 0:
+        return max(1, min(int(config.workers), job_count))
+    cpu_count = os.cpu_count() or 4
+    return max(1, min(8, cpu_count, job_count))
+
+
 def generate_dataset(config: DatasetConfig) -> dict[str, Any]:
     config.out_dir.mkdir(parents=True, exist_ok=True)
-    teacher = None
+    teacher_local = threading.local()
+    teacher_token = None
     if not config.dry_run_oracle:
-        token = os.getenv("HF_TOKEN")
-        if not token:
+        teacher_token = os.getenv("HF_TOKEN")
+        if not teacher_token:
             raise RuntimeError("HF_TOKEN is required unless --dry-run-oracle is set")
-        teacher = HuggingFaceTeacher(
-            model=config.teacher_model,
-            token=token,
-            max_tokens=config.max_tokens,
-            temperature=config.temperature,
-            top_p=config.top_p,
-        )
 
+    def teacher_for_thread() -> HuggingFaceTeacher | None:
+        if config.dry_run_oracle:
+            return None
+        teacher = getattr(teacher_local, "teacher", None)
+        if teacher is None:
+            teacher = HuggingFaceTeacher(
+                model=config.teacher_model,
+                token=str(teacher_token),
+                max_tokens=config.max_tokens,
+                temperature=config.temperature,
+                top_p=config.top_p,
+            )
+            teacher_local.teacher = teacher
+        return teacher
+
+    difficulty_levels = _difficulty_levels(config)
+    difficulty_bucket_count = _configure_difficulty_buckets(config, difficulty_levels)
+    validation_seed_start = config.seed_start + int(config.episodes) * len(difficulty_levels)
     split_jobs = [(config.split, config.episodes, config.seed_start)]
     if config.validation_episodes:
-        split_jobs.append(("validation", config.validation_episodes, config.seed_start + config.episodes))
+        split_jobs.append(("validation", config.validation_episodes, validation_seed_start))
+    episode_jobs = [
+        {
+            "order": job_order,
+            "split": split,
+            "difficulty": int(difficulty),
+            "seed": int(seed_start) + difficulty_index * int(episodes) + offset,
+        }
+        for job_order, (split, episodes, seed_start) in enumerate(split_jobs)
+        for difficulty_index, difficulty in enumerate(difficulty_levels)
+        for offset in range(int(episodes))
+    ]
 
     rows_by_split: dict[str, list[dict[str, Any]]] = {"train": [], "validation": []}
     attempts: list[dict[str, Any]] = []
     rewards: list[float] = []
     accepted = 0
-    attempted = 0
-    for split, episodes, seed_start in split_jobs:
-        for offset in range(int(episodes)):
-            seed = int(seed_start) + offset
-            attempted += 1
-            result = run_episode(
+    attempted = len(episode_jobs)
+    workers = _resolved_worker_count(config, attempted)
+
+    def run_job(job: dict[str, Any]) -> dict[str, Any]:
+        seed = int(job["seed"])
+        split = str(job["split"])
+        difficulty = int(job["difficulty"])
+        return {
+            "order": int(job["order"]),
+            **run_episode(
                 seed=seed,
                 split=split,
-                difficulty=config.difficulty,
+                difficulty=difficulty,
                 config=config,
-                teacher=teacher,
+                teacher=teacher_for_thread(),
+            ),
+        }
+
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sft-episode") as executor:
+        futures = [executor.submit(run_job, job) for job in episode_jobs]
+        for future in as_completed(futures):
+            result = future.result()
+            results.append(result)
+            if config.progress:
+                print(
+                    json.dumps(
+                        {
+                            "event": "episode_done",
+                            "accepted": bool(result.get("accepted")),
+                            "split": result.get("split"),
+                            "difficulty": result.get("difficulty"),
+                            "seed": result.get("seed"),
+                            "reason": result.get("reason", ""),
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+
+    for result in sorted(
+        results,
+        key=lambda item: (
+            str(item.get("split", "")),
+            int(item.get("difficulty", 0)),
+            int(item.get("seed", 0)),
+        ),
+    ):
+        seed = int(result["seed"])
+        split = str(result["split"])
+        difficulty = int(result["difficulty"])
+        attempts.append(
+            {
+                "seed": seed,
+                "split": split,
+                "difficulty": difficulty,
+                "accepted": bool(result["accepted"]),
+                "reason": result.get("reason", ""),
+                "trajectory_path": str(_write_trajectory(config.out_dir, result["trajectory"])),
+            }
+        )
+        if result["accepted"]:
+            accepted += 1
+            rows = list(result["rows"])
+            rows_by_split.setdefault(split, []).extend(rows)
+            rewards.append(float(result["trajectory"].get("terminal_total", 0.0)))
+
+    for split_rows in rows_by_split.values():
+        split_rows.sort(
+            key=lambda row: (
+                int((row.get("metadata") or {}).get("difficulty", 0)),
+                int((row.get("metadata") or {}).get("seed", 0)),
+                int((row.get("metadata") or {}).get("step", 0)),
             )
-            attempts.append(
-                {
-                    "seed": seed,
-                    "split": split,
-                    "accepted": bool(result["accepted"]),
-                    "reason": result.get("reason", ""),
-                    "trajectory_path": str(_write_trajectory(config.out_dir, result["trajectory"])),
-                }
-            )
-            if result["accepted"]:
-                accepted += 1
-                rows = list(result["rows"])
-                rows_by_split.setdefault(split, []).extend(rows)
-                rewards.append(float(result["trajectory"].get("terminal_total", 0.0)))
+        )
 
     for split_name in ("train", "validation", config.split):
         write_jsonl(config.out_dir / f"{split_name}.jsonl", rows_by_split.get(split_name, []))
+
+    reward_verification = verify_sft_dataset_rewards(
+        config.out_dir,
+        min_terminal_reward=config.min_terminal_reward,
+        require_train_rows=config.split == "train",
+        required_difficulties=difficulty_levels if len(difficulty_levels) > 1 else (),
+    )
+
+    accepted_by_difficulty: dict[str, int] = {}
+    attempted_by_difficulty: dict[str, int] = {}
+    reward_by_difficulty: dict[str, list[float]] = {}
+    row_count_by_difficulty: dict[str, int] = {}
+    for result in results:
+        difficulty_key = str(int(result.get("difficulty", 0)))
+        attempted_by_difficulty[difficulty_key] = attempted_by_difficulty.get(difficulty_key, 0) + 1
+        if result.get("accepted"):
+            accepted_by_difficulty[difficulty_key] = accepted_by_difficulty.get(difficulty_key, 0) + 1
+            reward_by_difficulty.setdefault(difficulty_key, []).append(
+                float((result.get("trajectory") or {}).get("terminal_total", 0.0))
+            )
+    for split_rows in rows_by_split.values():
+        for row in split_rows:
+            difficulty_key = str(int((row.get("metadata") or {}).get("difficulty", 0)))
+            row_count_by_difficulty[difficulty_key] = row_count_by_difficulty.get(difficulty_key, 0) + 1
 
     manifest = {
         "teacher_model": config.teacher_model,
         "target_model": config.target_model,
         "split": config.split,
         "difficulty": config.difficulty,
+        "difficulty_levels": [int(level) for level in difficulty_levels],
+        "difficulty_bucket_count": int(difficulty_bucket_count),
+        "episodes_per_difficulty": config.episodes,
+        "validation_episodes_per_difficulty": config.validation_episodes,
         "seed_start": config.seed_start,
         "episodes_attempted": attempted,
         "episodes_accepted": accepted,
         "acceptance_rate": accepted / attempted if attempted else 0.0,
+        "attempted_by_difficulty": attempted_by_difficulty,
+        "accepted_by_difficulty": accepted_by_difficulty,
+        "rows_by_difficulty": row_count_by_difficulty,
+        "reward_summary_by_difficulty": {
+            key: _reward_summary(value) for key, value in sorted(reward_by_difficulty.items())
+        },
+        "workers": workers,
         "rows_by_split": {key: len(value) for key, value in sorted(rows_by_split.items())},
         "reward_summary": _reward_summary(rewards),
+        "reward_verification": reward_verification,
         "git_sha": _git_sha(),
         "verifier_version": "verifier_v1",
         "dry_run_oracle": config.dry_run_oracle,
         "attempts": attempts,
     }
+    if config.push_to_hub:
+        if not reward_verification["passed"]:
+            raise RuntimeError("Reward verification failed; refusing to push dataset to Hub.")
+        manifest["hub"] = {
+            "repo_id": config.dataset_repo_id,
+            "private": bool(config.hub_private),
+            "url": f"https://huggingface.co/datasets/{config.dataset_repo_id}",
+        }
+    write_dataset_card(config.out_dir, manifest, config.dataset_repo_id)
     manifest_path = config.out_dir / "manifest.json"
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True, default=str),
         encoding="utf-8",
     )
+    if config.push_to_hub:
+        hub_result = push_dataset_to_hub(
+            config.out_dir,
+            repo_id=config.dataset_repo_id,
+            private=config.hub_private,
+        )
+        manifest["hub"].update(hub_result)
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True, default=str),
+            encoding="utf-8",
+        )
     return manifest
 
 
@@ -705,6 +1168,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-model", default=DEFAULT_TARGET_MODEL)
     parser.add_argument("--split", default="train", choices=["train", "validation", "hidden_eval"])
     parser.add_argument("--difficulty", type=int, default=0)
+    parser.add_argument(
+        "--difficulty-levels",
+        default="",
+        help="Comma-separated curriculum levels to include, for example 0,1,2,3. "
+        "When set, --episodes is per difficulty level.",
+    )
+    parser.add_argument(
+        "--difficulty-buckets",
+        type=int,
+        default=0,
+        help=(
+            "Number of curriculum difficulty buckets to expose to the environment. "
+            "Defaults to max(--difficulty-levels)+1."
+        ),
+    )
     parser.add_argument("--seed-start", type=int, default=0)
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--validation-episodes", type=int, default=0)
@@ -714,6 +1192,48 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-tokens", type=int, default=768)
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="Parallel episode workers. 0 auto-selects up to 8 workers.",
+    )
+    parser.add_argument(
+        "--min-terminal-reward",
+        type=float,
+        default=12.0,
+        help="Minimum verifier-backed terminal reward required for SFT rows.",
+    )
+    parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="Only verify an existing out-dir dataset reward metadata.",
+    )
+    parser.add_argument(
+        "--push-to-hub",
+        action="store_true",
+        help="Upload the verified dataset folder to a Hugging Face dataset repo.",
+    )
+    parser.add_argument(
+        "--progress",
+        action="store_true",
+        help="Print one JSON progress event for each completed episode job.",
+    )
+    parser.add_argument(
+        "--push-only",
+        action="store_true",
+        help="Verify and upload an existing out-dir dataset without regenerating rows.",
+    )
+    parser.add_argument(
+        "--dataset-repo-id",
+        default="Humanlearning/CyberSecurity_OWASP-sft-dataset",
+        help="Hugging Face dataset repo id used with --push-to-hub.",
+    )
+    parser.add_argument(
+        "--hub-private",
+        action="store_true",
+        help="Create/upload the Hugging Face dataset repo as private.",
+    )
     parser.add_argument(
         "--dry-run-oracle",
         action="store_true",
@@ -728,6 +1248,8 @@ def config_from_args(args: argparse.Namespace) -> DatasetConfig:
         target_model=args.target_model,
         split=args.split,
         difficulty=args.difficulty,
+        difficulty_levels=_parse_int_csv(args.difficulty_levels),
+        difficulty_buckets=args.difficulty_buckets,
         seed_start=args.seed_start,
         episodes=args.episodes,
         validation_episodes=args.validation_episodes,
@@ -738,15 +1260,50 @@ def config_from_args(args: argparse.Namespace) -> DatasetConfig:
         temperature=args.temperature,
         top_p=args.top_p,
         dry_run_oracle=args.dry_run_oracle,
+        workers=args.workers,
+        min_terminal_reward=args.min_terminal_reward,
+        push_to_hub=args.push_to_hub,
+        dataset_repo_id=args.dataset_repo_id,
+        hub_private=args.hub_private,
+        progress=args.progress,
     )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    manifest = generate_dataset(config_from_args(args))
-    print(json.dumps(manifest, indent=2, sort_keys=True))
-    return 0
+    try:
+        if args.verify_only:
+            verification = verify_sft_dataset_rewards(
+                args.out_dir,
+                min_terminal_reward=args.min_terminal_reward,
+                require_train_rows=args.split == "train",
+                required_difficulties=_parse_int_csv(args.difficulty_levels),
+            )
+            print(json.dumps({"reward_verification": verification}, indent=2, sort_keys=True))
+            return 0 if verification["passed"] else 2
+        if args.push_only:
+            result = push_existing_dataset(
+                args.out_dir,
+                repo_id=args.dataset_repo_id,
+                private=args.hub_private,
+                min_terminal_reward=args.min_terminal_reward,
+                required_difficulties=_parse_int_csv(args.difficulty_levels),
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        manifest = generate_dataset(config_from_args(args))
+        print(json.dumps(manifest, indent=2, sort_keys=True))
+        return 0 if manifest.get("reward_verification", {}).get("passed") else 2
+    except (RuntimeError, ValueError) as exc:
+        print(
+            json.dumps(
+                {"error": str(exc), "error_type": exc.__class__.__name__},
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
 
 
 if __name__ == "__main__":

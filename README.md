@@ -256,6 +256,100 @@ The shell wrapper is equivalent:
 MODE=smoke EPISODES=4 uv run --extra modal bash scripts/modal_run_ephemeral.sh
 ```
 
+## Synthetic SFT Before GRPO
+
+Use supervised fine-tuning to warm-start `unsloth/gemma-4-E2B-it` before GRPO.
+The SFT generator executes every teacher action in the real environment and
+keeps only trajectories that pass the deterministic reward verifier.
+
+Generate a 300-train-episode curriculum SFT dataset across levels `0,1,2,3`:
+
+```bash
+uv run python scripts/generate_sft_dataset.py \
+  --teacher-model deepseek-ai/DeepSeek-V4-Pro \
+  --target-model unsloth/gemma-4-E2B-it \
+  --difficulty-levels 0,1,2,3 \
+  --difficulty-buckets 4 \
+  --episodes 75 \
+  --validation-episodes 20 \
+  --workers 8 \
+  --out-dir outputs/sft
+```
+
+`--episodes` is per difficulty level when `--difficulty-levels` is set, so
+`--episodes 75` across four levels gives 300 total train episodes. Expect
+roughly 2,400-4,500 chat-format JSONL rows because each successful trajectory
+contributes one row per action step. The script writes JSONL rows under
+`outputs/sft/`, trajectory artifacts under `outputs/sft/trajectories/`, a
+dataset card at `outputs/sft/README.md`, and `outputs/sft/manifest.json` with
+reward summaries and curriculum coverage.
+
+Verify reward metadata before any training run:
+
+```bash
+uv run python scripts/generate_sft_dataset.py \
+  --verify-only \
+  --difficulty-levels 0,1,2,3 \
+  --out-dir outputs/sft
+```
+
+Push the verified dataset to Hugging Face Hub:
+
+```bash
+uv run python scripts/generate_sft_dataset.py \
+  --push-only \
+  --difficulty-levels 0,1,2,3 \
+  --out-dir outputs/sft \
+  --dataset-repo-id Humanlearning/CyberSecurity_OWASP-sft-dataset
+```
+
+The canonical dataset repo name is
+`Humanlearning/CyberSecurity_OWASP-sft-dataset`. The upload is refused if
+reward verification fails or `HF_TOKEN` is missing.
+
+You can also generate and push in one command by adding `--push-to-hub` to the
+generation command.
+
+For local CI or smoke checks, add `--dry-run-oracle`; official SFT data should
+use the teacher path and still pass the verifier gate above.
+
+Launch SFT on Modal after reward verification passes:
+
+```bash
+uv run --extra modal modal run --detach scripts/modal_train_sft.py \
+  --local-train-path outputs/sft/train.jsonl \
+  --local-validation-path outputs/sft/validation.jsonl \
+  --local-manifest-path outputs/sft/manifest.json \
+  --required-difficulties 0,1,2,3 \
+  --trackio-space-id Humanlearning/CyberSecurity_OWASP-trackio \
+  --trackio-project CyberSecurity_OWASP-sft \
+  --output-repo-id Humanlearning/CyberSecurity_OWASP-unsloth-gemma-4-e2b-it-sft-lora \
+  --push-to-hub \
+  --detach
+```
+
+`scripts/modal_train_sft.py` re-checks the JSONL reward metadata locally before
+upload and again inside Modal before loading the model. It refuses to start SFT
+unless all required curriculum difficulties are represented and the verifier
+reward metadata passes. The default SFT config trains one full epoch
+(`--max-steps -1`) with packed assistant-only loss, bf16/tf32, LoRA rank 32,
+and Modal GPU fallback `H200 -> H100 -> A100-80GB -> L40S`. A warm run for the
+300-episode dataset should usually finish in about 15-45 minutes; first image
+or model-cache builds can push that closer to 35-75 minutes.
+
+Continue GRPO from the SFT LoRA:
+
+```bash
+uv run --extra modal modal run --detach scripts/modal_train_grpo.py \
+  --initial-adapter-repo-id Humanlearning/CyberSecurity_OWASP-unsloth-gemma-4-e2b-it-sft-lora \
+  --max-steps 300 \
+  --dataset-size 64 \
+  --num-generations 8 \
+  --difficulty 0 \
+  --trace-log-every 10 \
+  --detach
+```
+
 ## Modal GRPO Training
 
 The persistent GPU training launcher packages this local repo into Modal, trains
