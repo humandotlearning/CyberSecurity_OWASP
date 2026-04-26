@@ -6,7 +6,8 @@ WORKDIR /app/env
 COPY pyproject.toml uv.lock ./
 COPY README.md openenv.yaml ./
 COPY __init__.py client.py models.py ./
-COPY bug_mutator.py evals.py fixture_generator.py policy_graph.py rewards.py safety.py scenario_compiler.py template_renderer.py validators.py ./
+COPY bug_mutator.py config.py evals.py fixture_generator.py policy_graph.py reward_config.py rewards.py safety.py scenario_compiler.py template_renderer.py validators.py ./
+COPY configs ./configs
 COPY server ./server
 COPY training ./training
 COPY scripts ./scripts
