@@ -59,6 +59,10 @@ def test_modal_sft_defaults_match_300_episode_fast_handoff_plan():
     assert '"packing": False' in source
     assert '"packing_strategy": "bfd"' not in source
     assert '"dataset_num_proc": None' in source
+    assert "Dataset.from_list(tokenized_rows)" in source
+    assert "tokenizer.apply_chat_template" in source
+    assert "class CyberSecurityOWASPSFTTrainer(SFTTrainer)" in source
+    assert "Trainer.compute_loss(self, model, inputs" in source
     assert '"bf16": True' in source
     assert '"tf32": True' in source
     assert '"hub_strategy": "every_save"' in source
@@ -74,4 +78,7 @@ def test_modal_grpo_loads_sft_adapter_from_hub_as_trainable_lora():
     assert "initial_adapter_repo_id" in source
     assert "Downloading initial SFT adapter" in source
     assert "snapshot_download(" in source
-    assert "PeftModel.from_pretrained(model, adapter_source, is_trainable=True)" in source
+    assert "Attaching Unsloth LoRA before loading SFT weights" in source
+    assert "load_safetensors_file(str(adapter_weights_path), device=\"cpu\")" in source
+    assert "set_peft_model_state_dict(" in source
+    assert "unexpected_adapter_keys" in source

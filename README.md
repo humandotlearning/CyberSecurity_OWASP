@@ -335,12 +335,19 @@ reward metadata passes. The default SFT config trains the full dataset
 (`--max-steps -1`) with bf16/tf32, LoRA rank 32, and Modal GPU fallback
 `H200 -> H100 -> A100-80GB -> L40S`. TRL does not support packing or
 assistant-only loss for the Gemma 4 vision-language loader, so both remain
-disabled for this model. Dataset preprocessing disables multiprocessing because
-the Gemma/Unsloth config is not pickle-safe under TRL dataset workers. A warm run
-for the 300-400 episode dataset should usually finish in about 20-60 minutes;
-first image or model-cache builds can push that closer to 45-90 minutes.
+disabled for this model. The script pre-tokenizes the small JSONL dataset
+serially before constructing `SFTTrainer`, which avoids TRL multiprocessing
+around the Gemma/Unsloth config object. It also uses the base Transformers loss
+path to avoid a TRL entropy-metric incompatibility with Gemma 4 lazy logits. A
+warm run for the 300-400 episode dataset should usually finish in about 20-60
+minutes; first image or model-cache builds can push that closer to 45-90
+minutes.
 
 Continue GRPO from the SFT LoRA:
+
+The GRPO launcher downloads the Hub adapter, attaches a matching trainable
+Unsloth LoRA to Gemma 4, and then loads the adapter safetensors. This keeps the
+SFT handoff compatible with Gemma 4's Unsloth linear wrappers.
 
 ```bash
 uv run --extra modal modal run --detach scripts/modal_train_grpo.py \

@@ -373,8 +373,9 @@ def train_cybersecurity_owasp_sft(
 ) -> dict[str, Any]:
     import inspect
 
-    from datasets import load_dataset
+    from datasets import Dataset, load_dataset
     from huggingface_hub import snapshot_download
+    from transformers import Trainer
     from trl import SFTConfig, SFTTrainer
     try:
         from trl.chat_template_utils import add_response_schema
@@ -454,6 +455,47 @@ def train_cybersecurity_owasp_sft(
     except Exception as exc:
         print(f"Tokenizer response schema add skipped: {exc!r}")
 
+    def _tokenize_sft_split(split_name: str, split_dataset) -> Dataset:
+        tokenized_rows: list[dict[str, list[int]]] = []
+        total_rows = len(split_dataset)
+        for row_index, example in enumerate(split_dataset, start=1):
+            messages = example["messages"]
+            if isinstance(messages, str):
+                messages = json.loads(messages)
+            rendered = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=False,
+            )
+            try:
+                encoded = tokenizer(
+                    rendered,
+                    add_special_tokens=False,
+                    truncation=True,
+                    max_length=max_seq_length,
+                )
+            except TypeError:
+                encoded = tokenizer(
+                    text=rendered,
+                    add_special_tokens=False,
+                    truncation=True,
+                    max_length=max_seq_length,
+                )
+            input_ids = encoded["input_ids"]
+            if input_ids and isinstance(input_ids[0], list):
+                input_ids = input_ids[0]
+            input_ids = [int(token_id) for token_id in input_ids[:max_seq_length]]
+            if not input_ids:
+                raise RuntimeError(f"{split_name} row {row_index} produced no tokens.")
+            tokenized_rows.append({"input_ids": input_ids, "labels": list(input_ids)})
+            if row_index % 500 == 0 or row_index == total_rows:
+                print(f"Tokenized {split_name} rows: {row_index}/{total_rows}")
+        return Dataset.from_list(tokenized_rows)
+
+    dataset["train"] = _tokenize_sft_split("train", dataset["train"])
+    if has_validation:
+        dataset["validation"] = _tokenize_sft_split("validation", dataset["validation"])
+
     model = model_api.get_peft_model(
         model,
         r=lora_rank,
@@ -522,7 +564,20 @@ def train_cybersecurity_owasp_sft(
     )
     if skipped_trainer:
         print(f"Skipping unsupported SFTTrainer keys: {skipped_trainer}")
-    trainer = SFTTrainer(
+    class CyberSecurityOWASPSFTTrainer(SFTTrainer):
+        def compute_loss(
+            self,
+            model,
+            inputs,
+            return_outputs: bool = False,
+            num_items_in_batch=None,
+        ):
+            compute_loss_kwargs = {"return_outputs": return_outputs}
+            if "num_items_in_batch" in inspect.signature(Trainer.compute_loss).parameters:
+                compute_loss_kwargs["num_items_in_batch"] = num_items_in_batch
+            return Trainer.compute_loss(self, model, inputs, **compute_loss_kwargs)
+
+    trainer = CyberSecurityOWASPSFTTrainer(
         **{
             key: value
             for key, value in trainer_values.items()

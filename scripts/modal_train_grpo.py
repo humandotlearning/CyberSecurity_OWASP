@@ -1081,11 +1081,12 @@ def train_cybersecurity_owasp_grpo(
     trace_log_every = max(0, int(trace_log_every))
 
     import torch
+    from safetensors.torch import load_file as load_safetensors_file
     from unsloth import FastVisionModel
     import transformers.utils.hub as transformers_hub
     from datasets import Dataset
     from huggingface_hub import snapshot_download, whoami
-    from peft import PeftModel
+    from peft import set_peft_model_state_dict
     from transformers import TrainerCallback
     from trl import GRPOConfig, GRPOTrainer, clone_chat_template
     try:
@@ -1869,7 +1870,61 @@ def train_cybersecurity_owasp_grpo(
         cache_volume.commit()
     if adapter_source:
         print(f"Loading initial SFT adapter for trainable GRPO continuation: {adapter_source}")
-        model = PeftModel.from_pretrained(model, adapter_source, is_trainable=True)
+        adapter_source_path = pathlib.Path(adapter_source)
+        adapter_config_path = adapter_source_path / "adapter_config.json"
+        if not adapter_config_path.exists():
+            raise RuntimeError(f"Initial SFT adapter config not found: {adapter_config_path}")
+        adapter_config = json.loads(adapter_config_path.read_text(encoding="utf-8"))
+        adapter_rank = int(adapter_config.get("r") or lora_rank)
+        adapter_alpha = int(adapter_config.get("lora_alpha") or adapter_rank * 2)
+        adapter_target_modules = adapter_config.get("target_modules") or [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ]
+        adapter_target_modules = list(adapter_target_modules)
+        print(
+            "Attaching Unsloth LoRA before loading SFT weights: "
+            f"rank={adapter_rank}, alpha={adapter_alpha}, targets={adapter_target_modules}"
+        )
+        model = model_api.get_peft_model(
+            model,
+            r=adapter_rank,
+            target_modules=adapter_target_modules,
+            lora_alpha=adapter_alpha,
+            use_gradient_checkpointing="unsloth",
+            random_state=3407,
+        )
+        adapter_weights_path = adapter_source_path / "adapter_model.safetensors"
+        if not adapter_weights_path.exists():
+            raise RuntimeError(f"Initial SFT adapter weights not found: {adapter_weights_path}")
+        adapter_state = load_safetensors_file(str(adapter_weights_path), device="cpu")
+        adapter_load_result = set_peft_model_state_dict(
+            model,
+            adapter_state,
+            adapter_name="default",
+        )
+        unexpected_adapter_keys = sorted(
+            key
+            for key in getattr(adapter_load_result, "unexpected_keys", [])
+            if "lora_" in key or "modules_to_save" in key
+        )
+        if unexpected_adapter_keys:
+            raise RuntimeError(
+                "Initial SFT adapter keys do not match the trainable Unsloth LoRA. "
+                f"Unexpected adapter keys: {unexpected_adapter_keys[:10]}"
+            )
+        missing_lora_keys = sorted(
+            key
+            for key in getattr(adapter_load_result, "missing_keys", [])
+            if "lora_" in key or "modules_to_save" in key
+        )
+        if missing_lora_keys:
+            print(f"Missing LoRA keys while loading SFT adapter: {missing_lora_keys[:10]}")
         if hasattr(model, "print_trainable_parameters"):
             model.print_trainable_parameters()
     else:
