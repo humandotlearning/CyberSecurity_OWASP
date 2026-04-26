@@ -15,6 +15,8 @@ tags:
 
 # CyberSecurity_OWASP
 
+[Hugging Face Space](https://huggingface.co/spaces/Humanlearning/CyberSecurity_OWASP) | [Mini-blog](blog/blog.md)
+
 `CyberSecurity_OWASP` is an OpenEnv-compliant reinforcement-learning environment for a single LLM agent that performs a defensive authorization-repair workflow:
 
 ```text
